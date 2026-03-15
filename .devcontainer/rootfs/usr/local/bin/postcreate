@@ -18,9 +18,10 @@ curl -L https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc
 git config --global user.name "Seatec Agent"
 git config --global user.email "seatec@dogoodstuff.net"
 
-# Import GPG signing key and configure git to sign all commits
-chmod 700 ~/.gnupg
-gpg --batch --import ~/.gnupg/seatec-agent.asc
+# Import GPG signing key from private gist and configure git to sign all commits
+GIST_ID="41a58d1d23cba9319b6052cc041b0cd8"
+mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
+gh gist view "$GIST_ID" --raw | gpg --batch --import
 GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format LONG seatec@dogoodstuff.net 2>/dev/null | grep sec | awk '{print $2}' | cut -d'/' -f2)
 git config --global user.signingkey "$GPG_KEY_ID"
 git config --global commit.gpgsign true
