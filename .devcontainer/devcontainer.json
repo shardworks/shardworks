@@ -32,11 +32,11 @@
   "mounts": [
     "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached"
   ],
-  "name": "[patchworks] devcontainer",
+  "name": "[shardworks] devcontainer",
   "overrideCommand": true,
   "postAttachCommand": "sudo chown -R vscode.vscode /workspace",
   "postCreateCommand": "/usr/local/bin/postcreate",
   "remoteUser": "vscode",
-  "service": "devcontainer_patchworks",
+  "service": "devcontainer_shardworks",
   "workspaceFolder": "/workspace"
 }

@@ -1,5 +1,5 @@
 services:
-  devcontainer_patchworks:
+  devcontainer_shardworks:
     build:
       context: .
       dockerfile: Dockerfile
