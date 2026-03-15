@@ -5,7 +5,9 @@ RUN wget https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd6
     chmod +x /usr/local/bin/yq
 
 COPY rootfs/ /
-RUN chmod +x /usr/local/bin/*
+RUN chmod +x /usr/local/bin/* && \
+    chmod 700 /home/vscode/.gnupg && \
+    chmod 600 /home/vscode/.gnupg/seatec-agent.asc
 
 USER vscode
 
