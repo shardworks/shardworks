@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+export PANDOC_VERSION=3.8.3
+export PANDOC_CHECKSUM="sha256:c224fab89f827d3623380ecb7c1078c163c769c849a14ac27e8d3bfbb914c9b4"
+curl -L https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz \
+  -o pandoc.tar.gz && \
+  if [ -n "$PANDOC_CHECKSUM" ]; then \
+      echo "${PANDOC_CHECKSUM#sha256:}  pandoc.tar.gz" | sha256sum -c -; \
+  else \
+      curl -L https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz.sha256 \
+      -o pandoc.tar.gz.sha256 && \
+      sha256sum -c pandoc.tar.gz.sha256 && \
+      rm pandoc.tar.gz.sha256; \
+  fi && \
+  sudo tar xvzf pandoc.tar.gz --strip-components 1 -C /usr/local/ && \
+  rm pandoc.tar.gz
+  
+cd /workspace

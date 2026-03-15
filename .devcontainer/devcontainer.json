@@ -1,0 +1,42 @@
+{
+  "containerEnv": {
+    "PW_CHROMIUM_SANDBOX": "0",
+    "VSCODE_AGENT_FOLDER": "/vscode"
+  },
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "dev.containers.dockerCredentialHelper": false
+      }
+    }
+  },
+  "dockerComposeFile": ["docker-compose.yml"],
+  "features": {
+    // "ghcr.io/devcontainers-extra/features/lastpass-cli-homebrew:1": {}, -- broken, because ghcr.io no longer exists
+    // "ghcr.io/devcontainers/features/aws-cli:1": {},
+    // "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+    // "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts/krypton"
+    },
+    "ghcr.io/devcontainers/features/python:1": {}
+  },
+  "forwardPorts": [],
+  "portsAttributes": {},
+  "init": true,
+  "initializeCommand": "SSH_KEY_FILTER=seatec .devcontainer/scripts/start-filter-agent.sh",
+  "mounts": [
+    "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached"
+  ],
+  "name": "[patchworks] devcontainer",
+  "overrideCommand": true,
+  "postAttachCommand": "sudo chown -R vscode.vscode /workspace",
+  "postCreateCommand": "/usr/local/bin/postcreate",
+  "remoteUser": "vscode",
+  "service": "devcontainer_patchworks",
+  "workspaceFolder": "/workspace"
+}

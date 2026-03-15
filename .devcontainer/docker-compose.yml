@@ -1,0 +1,16 @@
+services:
+  devcontainer_patchworks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: "6"
+          memory: 6g
+    hostname: devcontainer
+    ipc: host
+    network_mode: host
+    shm_size: 1g
+    volumes:
+      - ..:/workspace:cached

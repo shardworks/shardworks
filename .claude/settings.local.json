@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh org:*)",
+      "Bash(ls:*)",
+      "Bash(git init:*)"
+    ]
+  }
+}
