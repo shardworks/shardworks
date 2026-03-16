@@ -137,7 +137,7 @@ async function main(): Promise<void> {
     // made no code changes will get a fast no-op (no-branch or no-commits).
     let commitSha: string | undefined;
     if (!isAgentError) {
-      const merge = await mergeWorktreeToMain(conducted.taskId, conducted.workDir);
+      const merge = await mergeWorktreeToMain(conducted.taskId, conducted.workDir, conducted.agentId);
       if (merge.ok) {
         commitSha = merge.commitSha;
         if (merge.reason === 'merged') {

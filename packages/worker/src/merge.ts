@@ -25,6 +25,51 @@ function exec(cmd: string, args: string[], cwd: string): Promise<ExecResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Task metadata helper
+// ---------------------------------------------------------------------------
+
+interface TaskMeta {
+  description: string;
+  claimedAt: string | null;
+  completedAt: string | null;
+}
+
+/**
+ * Fetch task metadata from the task queue via `tq show`.
+ * Returns a minimal TaskMeta with fallback values on failure.
+ */
+async function fetchTaskMeta(taskId: string, workDir: string): Promise<TaskMeta> {
+  try {
+    const { stdout, exitCode } = await exec('tq', ['show', taskId], workDir);
+    if (exitCode !== 0) return { description: taskId, claimedAt: null, completedAt: null };
+    const task = JSON.parse(stdout.trim()) as Record<string, unknown>;
+    return {
+      description: typeof task.description === 'string' ? task.description : taskId,
+      claimedAt:   typeof task.claimed_at   === 'string' ? task.claimed_at   : null,
+      completedAt: typeof task.completed_at === 'string' ? task.completed_at : null,
+    };
+  } catch {
+    return { description: taskId, claimedAt: null, completedAt: null };
+  }
+}
+
+/**
+ * Format a duration in milliseconds as a human-readable string, e.g. "2h 3m 14s".
+ */
+function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSecs = Math.round(ms / 1000);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  const s = totalSecs % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
 // Result type
 // ---------------------------------------------------------------------------
 
@@ -56,10 +101,13 @@ export interface MergeResult {
  * retry once.
  *
  * Cleans up the worktree directory and local branch on success.
+ *
+ * @param agentId - The agent ID that completed the task (used in commit body).
  */
 export async function mergeWorktreeToMain(
   taskId: string,
   workDir: string,
+  agentId?: string,
 ): Promise<MergeResult> {
   const branchName  = `worktree-${taskId}`;
   const worktreePath = join(workDir, '.claude', 'worktrees', taskId);
@@ -102,12 +150,40 @@ export async function mergeWorktreeToMain(
   }
 
   // ------------------------------------------------------------------
-  // 4. Merge the worktree branch into main (--no-ff for clear history)
+  // 4. Build commit message then merge (--no-ff for clear history)
   // ------------------------------------------------------------------
-  const mergeMsg = `Merge task ${taskId}`;
-  let mergeResult = await exec(
-    'git', ['merge', branchName, '--no-ff', '-m', mergeMsg], workDir,
-  );
+  const meta = await fetchTaskMeta(taskId, workDir);
+  const completedAt = meta.completedAt ?? new Date().toISOString();
+
+  // Title: truncate description to 72 chars + task ID suffix
+  const titleDesc = meta.description.length > 72
+    ? meta.description.slice(0, 72)
+    : meta.description;
+  const mergeTitle = `${titleDesc} [${taskId}]`;
+
+  // Body: agent/timing metadata
+  let durationStr = 'unknown';
+  if (meta.claimedAt) {
+    const claimedMs  = new Date(meta.claimedAt).getTime();
+    const completedMs = new Date(completedAt).getTime();
+    if (!isNaN(claimedMs) && !isNaN(completedMs)) {
+      durationStr = formatDuration(completedMs - claimedMs);
+    }
+  }
+  const mergeBody = [
+    `Task: ${taskId}`,
+    `Agent: ${agentId ?? 'unknown'}`,
+    `Status: completed`,
+    `Claimed: ${meta.claimedAt ?? 'unknown'}`,
+    `Completed: ${completedAt}`,
+    `Duration: ${durationStr}`,
+  ].join('\n');
+
+  const buildMergeArgs = (branch: string) => [
+    'merge', branch, '--no-ff', '-m', mergeTitle, '-m', mergeBody,
+  ];
+
+  let mergeResult = await exec('git', buildMergeArgs(branchName), workDir);
 
   if (mergeResult.exitCode !== 0) {
     // If the failure is because untracked files would be overwritten, remove
@@ -117,9 +193,7 @@ export async function mergeWorktreeToMain(
       for (const f of staleFiles) {
         try { rmSync(join(workDir, f)); } catch { /* ignore if already gone */ }
       }
-      mergeResult = await exec(
-        'git', ['merge', branchName, '--no-ff', '-m', mergeMsg], workDir,
-      );
+      mergeResult = await exec('git', buildMergeArgs(branchName), workDir);
     }
   }
 
