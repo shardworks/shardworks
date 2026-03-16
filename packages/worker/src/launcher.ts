@@ -78,7 +78,7 @@ const RATE_LIMIT_PATTERNS = [
   /too many requests/i,
 ];
 
-function detectRateLimit(event: StreamEvent): boolean {
+export function detectRateLimit(event: StreamEvent): boolean {
   if (!event.is_error) return false;
   if ((event.total_cost_usd ?? 0) > 0) return false;
   const text = event.result ?? '';
@@ -89,7 +89,7 @@ function detectRateLimit(event: StreamEvent): boolean {
  * Try to parse a "resets <time>" from a rate-limit message.
  * Returns an ISO timestamp or null.
  */
-function parseRetryAfter(message: string): string | null {
+export function parseRetryAfter(message: string): string | null {
   // Match patterns like "resets 5pm (UTC)" or "resets 17:00 (UTC)"
   const match = message.match(/resets\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*\((\w+)\)/i);
   if (!match) return null;
@@ -125,7 +125,7 @@ function parseRetryAfter(message: string): string | null {
 // Log directory
 // ---------------------------------------------------------------------------
 
-function workLogsDir(workDir: string): string {
+export function workLogsDir(workDir: string): string {
   return process.env['WORK_LOGS_DIR'] ?? join(workDir, 'data', 'work-logs');
 }
 
@@ -197,7 +197,7 @@ function startHeartbeatLoop(
 // Argument construction
 // ---------------------------------------------------------------------------
 
-function buildArgs(config: ConductedConfig): string[] {
+export function buildArgs(config: ConductedConfig): string[] {
   const role = loadRole(config.role, config.workDir);
   const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags, workDir: config.workDir };
 
@@ -268,7 +268,7 @@ function formatToolInput(input: Record<string, unknown>): string {
  * Claude CLI emits complete message objects (not streaming deltas) where all
  * content is in event.message.content[].
  */
-function formatEvent(event: StreamEvent): string | null {
+export function formatEvent(event: StreamEvent): string | null {
   // Assistant turn: thinking blocks, text blocks, tool-use calls
   if (event.type === 'assistant') {
     const content = (event.message as { content?: ContentBlock[] } | undefined)?.content;

@@ -8,5 +8,8 @@
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev -w packages/tq",
     "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.0"
   }
 }
