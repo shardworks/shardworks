@@ -49,9 +49,10 @@ export async function withCommit<T>(
     const result = await withTransaction(conn, fn);
     try {
       await conn.execute("CALL dolt_add('-A')");
-      await conn.execute('CALL dolt_commit(?)', [
-        `-m ${commitMessage} --author "Queue Server <queue@shardworks>"`,
-      ]);
+      await conn.execute(
+        'CALL dolt_commit(?, ?, ?)',
+        ['-m', commitMessage, '--author "Queue Server <queue@shardworks>"'],
+      );
     } catch (commitErr) {
       // Non-fatal: MySQL changes are already committed.
       console.warn('[dolt] commit failed (possibly nothing to commit):', commitErr);

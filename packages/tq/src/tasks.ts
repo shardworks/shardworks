@@ -104,6 +104,30 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
       if (rows.length === 0) throw new Error(`Parent task not found: ${input.parent_id}`);
     }
 
+    // DAG validation: a true cycle is impossible on single enqueue since the
+    // new task doesn't exist yet and can't be referenced. However, we check
+    // that the declared deps don't contain contradictions — i.e. one dep
+    // already transitively depends on another dep, which is redundant and
+    // likely a mistake.
+    if (deps.length > 1) {
+      const reachable = await reachableFrom(conn, deps);
+      for (const depId of deps) {
+        if (reachable.has(depId)) {
+          // One of the other deps already transitively depends on this dep.
+          // Find which one for a useful error message.
+          for (const otherDep of deps) {
+            if (otherDep === depId) continue;
+            const otherReachable = await reachableFrom(conn, [otherDep]);
+            if (otherReachable.has(depId)) {
+              throw new Error(
+                `Redundant dependency: ${otherDep} already transitively depends on ${depId}`,
+              );
+            }
+          }
+        }
+      }
+    }
+
     const id = input.parent_id
       ? generateChildId(input.parent_id, input.description, input.created_by, now)
       : generateId(input.description, input.created_by, now);
@@ -332,9 +356,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
       const t = tasksByClientId.get(clientId)!;
       const deps = (t.dependencies ?? []).map(d => clientToRealId.get(d) ?? d);
 
-      // Verify external deps exist
-      const externalDeps = deps.filter(d => !clientToRealId.has(d) && !new Set(input.tasks.map(x => x.client_id)).has(d));
-      // Actually just verify all resolved dep IDs not in this batch exist in DB
+      // Verify external deps exist (deps already resolved to real IDs)
       const batchRealIds = new Set(clientToRealId.values());
       const externalDepIds = deps.filter(d => !batchRealIds.has(d));
       if (externalDepIds.length > 0) {
