@@ -1,0 +1,115 @@
+import { spawn } from 'node:child_process';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+function exec(cmd: string, args: string[], cwd: string): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// tq wrappers
+// ---------------------------------------------------------------------------
+
+/** Run a `tq` command and return the parsed JSON output. */
+export async function runTq<T = unknown>(workDir: string, args: string[]): Promise<T> {
+  const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
+  if (exitCode !== 0) {
+    throw new Error(`tq ${args[0]} failed (exit ${exitCode}): ${stderr.trim() || stdout.trim()}`);
+  }
+  try {
+    return JSON.parse(stdout.trim()) as T;
+  } catch {
+    throw new Error(`tq ${args[0]} returned non-JSON: ${stdout.trim()}`);
+  }
+}
+
+export interface ReapResult {
+  stale: Array<{ id: string }>;
+  released: Array<{ id: string }>;
+}
+
+/** Reap stale in_progress tasks and release them back to eligible. */
+export async function reapStale(workDir: string, staleAfter: string): Promise<ReapResult> {
+  return runTq<ReapResult>(workDir, ['reap', '--stale-after', staleAfter, '--release']);
+}
+
+export interface EnqueueResult {
+  id: string;
+}
+
+/** Enqueue a task ready for claiming (skips draft state). */
+export async function enqueuePlannerTask(
+  workDir: string,
+  description: string,
+  priority = 100,
+): Promise<string> {
+  const result = await runTq<EnqueueResult>(workDir, [
+    'enqueue', description,
+    '--assigned-role', 'planner',
+    '--priority', String(priority),
+    '--ready',
+  ]);
+  return result.id;
+}
+
+// ---------------------------------------------------------------------------
+// Worker spawning
+// ---------------------------------------------------------------------------
+
+export interface SpawnedWorker {
+  pid: number;
+  role: string;
+  taskId: string | null;
+  startedAt: string;
+}
+
+/**
+ * Spawn a detached worker process and immediately unref it so the conductor
+ * is not blocked on the worker finishing.
+ *
+ * The worker writes its own logs to data/work-logs/<taskId>.jsonl.
+ * The conductor does not track individual worker lifecycle — it relies on
+ * the DB (in_progress task count) as the source of truth.
+ */
+export function spawnWorker(
+  workDir: string,
+  role: string,
+  taskId?: string,
+): SpawnedWorker {
+  const args: string[] = ['--role', role];
+  if (taskId) args.push('--task-id', taskId);
+
+  const child = spawn('worker', args, {
+    cwd: workDir,
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      WORK_DIR: workDir,
+    },
+  });
+  child.unref();
+
+  return {
+    pid: child.pid ?? -1,
+    role,
+    taskId: taskId ?? null,
+    startedAt: new Date().toISOString(),
+  };
+}

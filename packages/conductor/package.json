@@ -1,0 +1,23 @@
+{
+  "name": "@shardworks/conductor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "conductor": "./bin/conductor"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsx src/cli.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "mysql2": "^3.11.0",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

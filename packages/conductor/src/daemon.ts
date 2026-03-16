@@ -1,0 +1,331 @@
+import type { ConductorConfig } from './config.js';
+import {
+  initialState,
+  writeState,
+  appendLog,
+  clearPid,
+  type ConductorState,
+  type Phase,
+} from './state.js';
+import { queryCounts, closePool, queryTasksSince, type TaskCounts } from './db.js';
+import { reapStale, spawnWorker, enqueuePlannerTask, type SpawnedWorker } from './spawn.js';
+
+// ---------------------------------------------------------------------------
+// Daemon entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the conductor daemon loop.  Never returns (until SIGTERM/SIGINT).
+ * Writes state and logs to data/ within workDir.
+ */
+export async function runDaemon(cfg: ConductorConfig): Promise<void> {
+  const state = initialState();
+
+  function log(
+    level: 'info' | 'warn' | 'error' | 'debug',
+    msg: string,
+    data?: unknown,
+  ): void {
+    appendLog(cfg.workDir, level, state.phase, msg, data);
+  }
+
+  async function saveState(): Promise<void> {
+    try {
+      await writeState(cfg.workDir, state);
+    } catch (err) {
+      log('error', 'Failed to write state file', { error: String(err) });
+    }
+  }
+
+  function setPhase(phase: Phase): void {
+    state.phase = phase;
+    // Fire-and-forget state flush — errors are logged inside saveState()
+    saveState().catch(() => undefined);
+  }
+
+  // -------------------------------------------------------------------------
+  // Graceful shutdown
+  // -------------------------------------------------------------------------
+
+  let stopping = false;
+
+  async function shutdown(signal: string): Promise<void> {
+    if (stopping) return;
+    stopping = true;
+    setPhase('stopping');
+    log('info', `Received ${signal}, shutting down gracefully`);
+    await saveState();
+    await closePool();
+    await clearPid(cfg.workDir);
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGINT',  () => { void shutdown('SIGINT'); });
+
+  // -------------------------------------------------------------------------
+  // Startup
+  // -------------------------------------------------------------------------
+
+  log('info', 'Conductor daemon starting', {
+    maxWorkers: cfg.maxWorkers,
+    batchPlanThreshold: cfg.batchPlanThreshold,
+    pollIntervalMs: cfg.pollIntervalMs,
+    staleAfter: cfg.staleAfter,
+  });
+  setPhase('idle');
+  await saveState();
+
+  // -------------------------------------------------------------------------
+  // Main loop
+  // -------------------------------------------------------------------------
+
+  while (!stopping) {
+    await sleep(cfg.pollIntervalMs);
+    if (stopping) break;
+
+    state.stats.tickCount++;
+    state.lastTickAt = new Date().toISOString();
+    log('debug', `Tick #${state.stats.tickCount}`);
+
+    try {
+      await tick(cfg, state, log, setPhase);
+    } catch (err) {
+      log('error', 'Tick failed with unexpected error', { error: String(err) });
+      setPhase('idle');
+    }
+
+    await saveState();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Single tick
+// ---------------------------------------------------------------------------
+
+type LogFn = (level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: unknown) => void;
+
+async function tick(
+  cfg: ConductorConfig,
+  state: ConductorState,
+  log: LogFn,
+  setPhase: (p: Phase) => void,
+): Promise<void> {
+  // ------------------------------------------------------------------
+  // 1. Reap stale in_progress tasks
+  // ------------------------------------------------------------------
+  setPhase('reaping');
+  try {
+    const reapResult = await reapStale(cfg.workDir, cfg.staleAfter);
+    if (reapResult.released.length > 0) {
+      state.stats.tasksReaped += reapResult.released.length;
+      log('info', `Reaped ${reapResult.released.length} stale task(s)`, {
+        ids: reapResult.released.map((t) => t.id),
+      });
+    }
+  } catch (err) {
+    log('warn', 'Reap failed, continuing', { error: String(err) });
+  }
+
+  // ------------------------------------------------------------------
+  // 2. Assess current capacity
+  // ------------------------------------------------------------------
+  setPhase('assessing');
+  let counts: TaskCounts;
+  try {
+    counts = await queryCounts();
+  } catch (err) {
+    log('error', 'DB query failed, skipping tick', { error: String(err) });
+    setPhase('idle');
+    return;
+  }
+
+  log('debug', 'Task counts', counts);
+
+  if (counts.inProgress >= cfg.maxWorkers) {
+    setPhase('waiting');
+    log('info', `At capacity: ${counts.inProgress}/${cfg.maxWorkers} workers in progress`);
+    return;
+  }
+
+  const slots = cfg.maxWorkers - counts.inProgress;
+
+  // ------------------------------------------------------------------
+  // 3. Full-backlog planning check
+  //    Trigger when X+ tasks have been created since the last plan.
+  // ------------------------------------------------------------------
+  const since = state.lastFullPlanAt ? new Date(state.lastFullPlanAt) : null;
+  let tasksSinceLastPlan = 0;
+  try {
+    tasksSinceLastPlan = await queryTasksSince(since);
+  } catch (err) {
+    log('warn', 'Could not count tasks since last plan', { error: String(err) });
+  }
+
+  const needsFullPlan =
+    tasksSinceLastPlan >= cfg.batchPlanThreshold &&
+    counts.eligiblePlanner === 0; // avoid creating duplicate planner tasks
+
+  if (needsFullPlan) {
+    setPhase('planning');
+    log('info', `Full-backlog plan triggered (${tasksSinceLastPlan} tasks since last plan)`);
+    try {
+      await runFullBacklogPlan(cfg, state, log);
+    } catch (err) {
+      log('error', 'Full-backlog plan failed', { error: String(err) });
+    }
+    return;
+  }
+
+  // ------------------------------------------------------------------
+  // 4. Fill available worker slots
+  // ------------------------------------------------------------------
+  setPhase('spawning');
+  let spawnedThisTick = 0;
+
+  for (let i = 0; i < slots; i++) {
+    const action = decideNextAction(counts, spawnedThisTick);
+
+    if (!action) {
+      state.lastNoWorkAt = new Date().toISOString();
+      log('warn', 'No eligible tasks available — waiting for human input', counts);
+      break;
+    }
+
+    try {
+      const spawned = await doSpawn(cfg, state, log, action, counts);
+      if (spawned) {
+        state.stats.workersSpawned++;
+        spawnedThisTick++;
+        // Optimistically increment so next slot decision is accurate
+        counts.inProgress++;
+        if (action === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
+        if (action === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+        if (action === 'planner') counts.eligiblePlanner = Math.max(0, counts.eligiblePlanner - 1);
+      }
+    } catch (err) {
+      log('error', `Failed to spawn ${action} worker`, { error: String(err) });
+    }
+  }
+
+  setPhase('idle');
+}
+
+// ---------------------------------------------------------------------------
+// Decision logic
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide what kind of worker to spawn next, given current task counts.
+ *
+ * Priority order:
+ *   1. Planner — if there are planner-assigned eligible tasks (created by
+ *      the conductor's full-backlog run or manually).
+ *   2. Implementer — if there are regular eligible tasks.
+ *   3. Refiner — if there are draft tasks that haven't been published yet.
+ *      Limited to one refiner spawn per tick to avoid wasteful claims.
+ *   4. null — nothing to do, notify humans.
+ *
+ * The `spawnedThisTick` argument lets us avoid spawning multiple refiners
+ * in the same tick (they would compete for the same draft tasks).
+ */
+function decideNextAction(
+  counts: TaskCounts,
+  spawnedThisTick: number,
+): 'implementer' | 'refiner' | 'planner' | null {
+  if (counts.eligiblePlanner > 0) return 'planner';
+
+  // Eligible non-planner tasks
+  const eligibleWork = counts.eligible - counts.eligiblePlanner;
+  if (eligibleWork > 0) return 'implementer';
+
+  // Draft tasks need a refiner — but cap at 1 refiner spawn per tick
+  if (counts.draft > 0 && spawnedThisTick === 0) return 'refiner';
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Worker spawning
+// ---------------------------------------------------------------------------
+
+async function doSpawn(
+  cfg: ConductorConfig,
+  state: ConductorState,
+  log: LogFn,
+  action: 'implementer' | 'refiner' | 'planner',
+  _counts: TaskCounts,
+): Promise<SpawnedWorker | null> {
+  let spawned: SpawnedWorker;
+
+  if (action === 'planner') {
+    spawned = spawnWorker(cfg.workDir, 'planner');
+    log('info', 'Spawned planner worker', { pid: spawned.pid });
+  } else if (action === 'refiner') {
+    spawned = spawnWorker(cfg.workDir, 'refiner');
+    log('info', 'Spawned refiner worker', { pid: spawned.pid });
+  } else {
+    spawned = spawnWorker(cfg.workDir, 'implementer');
+    log('info', 'Spawned implementer worker', { pid: spawned.pid });
+  }
+
+  if (spawned.pid < 0) {
+    log('warn', `Failed to get PID for ${action} worker`);
+    return null;
+  }
+
+  // Track the worker in state (best-effort; the real truth is the DB)
+  state.activeWorkers = [
+    ...state.activeWorkers.filter((w) => isStillRunning(w.pid)),
+    spawned,
+  ];
+
+  return spawned;
+}
+
+// ---------------------------------------------------------------------------
+// Full-backlog planning
+// ---------------------------------------------------------------------------
+
+async function runFullBacklogPlan(
+  cfg: ConductorConfig,
+  state: ConductorState,
+  log: LogFn,
+): Promise<void> {
+  const description =
+    'Full backlog review: deduplicate tasks, organize dependencies, groom priorities, cancel obsolete tasks, split large tasks into subtasks';
+
+  const taskId = await enqueuePlannerTask(cfg.workDir, description, 100);
+  log('info', 'Enqueued full-backlog planner task', { taskId });
+
+  const spawned = spawnWorker(cfg.workDir, 'planner', taskId);
+  log('info', 'Spawned planner worker for full-backlog review', {
+    pid: spawned.pid,
+    taskId,
+  });
+
+  state.lastFullPlanAt = new Date().toISOString();
+  state.stats.fullPlansRun++;
+  state.activeWorkers = [
+    ...state.activeWorkers.filter((w) => isStillRunning(w.pid)),
+    spawned,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isStillRunning(pid: number): boolean {
+  if (pid < 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
