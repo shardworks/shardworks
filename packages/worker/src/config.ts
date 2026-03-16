@@ -1,4 +1,4 @@
-import { parseArgs } from 'node:util';
+import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
@@ -45,28 +45,35 @@ export interface OneShotConfig extends BaseConfig {
 export type WorkerConfig = ConductedConfig | OneShotConfig;
 
 // ---------------------------------------------------------------------------
-// Parsing
+// Commander program (exported so index.ts can call .parseAsync())
 // ---------------------------------------------------------------------------
 
-export function parseConfig(): WorkerConfig {
-  const { values } = parseArgs({
-    options: {
-      'task-id':        { type: 'string' },
-      'role':           { type: 'string' },
-      'interactive':    { type: 'boolean' },
-      'no-interactive': { type: 'boolean' },
-    },
-    strict: true,
-  });
+export const program = new Command()
+  .name('worker')
+  .description('Shardworks worker — claim and execute tasks via Claude')
+  .version('0.0.1')
+  .option('--task-id <id>', 'Task ID to claim (conducted mode)')
+  .option('--role <role>', 'Worker role (default: implementer)', process.env['WORKER_ROLE'] ?? 'implementer')
+  .option('--interactive', 'Force human-readable stderr output')
+  .option('--no-interactive', 'Force silent stderr output');
 
-  const taskId  = values['task-id'];
+// ---------------------------------------------------------------------------
+// Parsing — call after program.parseAsync()
+// ---------------------------------------------------------------------------
 
-  const role = values['role'] ?? process.env['WORKER_ROLE'] ?? 'implementer';
+export function configFromParsedOpts(): WorkerConfig {
+  const opts = program.opts<{
+    taskId?: string;
+    role: string;
+    interactive: boolean;
+  }>();
 
-  // Interactive defaults to TTY detection; explicit flags override.
-  let interactive = process.stderr.isTTY ?? false;
-  if (values['interactive'] === true)    interactive = true;
-  if (values['no-interactive'] === true) interactive = false;
+  const taskId = opts.taskId;
+  const role   = opts.role;
+
+  // Commander handles --interactive / --no-interactive as a boolean with
+  // negation. If neither flag was explicitly passed, fall back to TTY detection.
+  const interactive = opts.interactive ?? (process.stderr.isTTY ?? false);
 
   const rawTags = process.env['AGENT_TAGS'] ?? '';
   const agentTags = rawTags

@@ -15,6 +15,13 @@ export interface RoleDefinition {
    */
   claimDraft: boolean;
   /**
+   * Restrict Claude to a specific subset of built-in tools.
+   * Passed as `--tools` to the claude CLI (comma-separated).
+   * If omitted, all tools are available (claude default).
+   * Example: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"]
+   */
+  allowedTools?: string[];
+  /**
    * System prompt lines. Supports template variables:
    *   {{agentId}}  — the agent's ID
    *   {{tagsLine}} — "\nCapability tags: foo, bar" or empty string

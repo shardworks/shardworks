@@ -146,6 +146,12 @@ function buildArgs(config: ConductedConfig): string[] {
     '--system-prompt', renderSystemPrompt(role, vars),
   ];
 
+  // Restrict to role-specific tool set when configured; reduces tool definition
+  // tokens and prevents unintended tool use (e.g. refiner shouldn't edit files).
+  if (role.allowedTools && role.allowedTools.length > 0) {
+    args.push('--tools', role.allowedTools.join(','));
+  }
+
   // Worktree is keyed by task ID — survives across agent invocations
   args.push('--worktree', config.taskId);
 
