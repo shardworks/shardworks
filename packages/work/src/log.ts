@@ -92,32 +92,62 @@ export interface StreamEvent {
 
 /** Format a stream event into a short human-readable line. */
 export function formatEvent(event: StreamEvent): string | null {
+  // Derive a timestamp prefix from the event if available. Claude SDK events
+  // don't always carry a top-level `timestamp`; fall back to nothing.
   const ts = event.timestamp
-    ? new Date(event.timestamp).toLocaleTimeString()
+    ? new Date(event.timestamp as string).toLocaleTimeString()
     : '';
   const prefix = ts ? `{grey-fg}${ts}{/grey-fg} ` : '';
 
   switch (event.type) {
     case 'assistant': {
-      if (event.subtype === 'text' && event.content_block?.text) {
-        const text = event.content_block.text.slice(0, 200);
-        return `${prefix}{green-fg}[assistant]{/green-fg} ${text}`;
+      // Claude SDK format: event.message.content is an array of content blocks
+      const content = (event.message as { content?: Array<{ type: string; text?: string; name?: string; input?: unknown }> } | undefined)?.content ?? [];
+      const lines: string[] = [];
+      for (const block of content) {
+        if (block.type === 'text' && block.text) {
+          const text = block.text.replace(/\n/g, ' ').slice(0, 200);
+          lines.push(`${prefix}{green-fg}[assistant]{/green-fg} ${text}`);
+        } else if (block.type === 'tool_use' && block.name) {
+          const inputStr = block.input ? JSON.stringify(block.input).slice(0, 80) : '';
+          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${block.name}${inputStr ? ' ' + inputStr : ''}`);
+        }
+        // 'thinking' blocks are skipped (internal reasoning)
+      }
+      // Legacy streaming format: event.subtype + event.content_block
+      if (lines.length === 0) {
+        if (event.subtype === 'text' && event.content_block?.text) {
+          const text = (event.content_block.text as string).slice(0, 200);
+          lines.push(`${prefix}{green-fg}[assistant]{/green-fg} ${text}`);
+        } else if (event.content_block?.name) {
+          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${event.content_block.name}`);
+        }
+      }
+      return lines.length > 0 ? lines.join('\n') : null;
+    }
+    case 'user': {
+      // Tool results come back as user messages in the SDK format
+      const content = (event.message as { content?: Array<{ type: string; content?: unknown }> } | undefined)?.content ?? [];
+      const resultCount = content.filter((b: { type: string }) => b.type === 'tool_result').length;
+      if (resultCount > 0) {
+        return `${prefix}{cyan-fg}[result]{/cyan-fg} ${resultCount} tool result${resultCount > 1 ? 's' : ''}`;
       }
       return null;
     }
+    // Legacy streaming event types
     case 'tool_use': {
       const name = event.content_block?.name ?? 'unknown';
-      return `${prefix}{yellow-fg}[tool]{/yellow-fg} ${name}`;
+      return `${prefix}{yellow-fg}[tool]{/yellow-fg} ${String(name)}`;
     }
     case 'tool_result': {
       return `${prefix}{cyan-fg}[result]{/cyan-fg} tool completed`;
     }
     case 'result': {
       const cost = event.total_cost_usd
-        ? ` ($${event.total_cost_usd.toFixed(4)})`
+        ? ` ($${(event.total_cost_usd as number).toFixed(4)})`
         : '';
       const dur = event.duration_ms
-        ? ` ${(event.duration_ms / 1000).toFixed(1)}s`
+        ? ` ${((event.duration_ms as number) / 1000).toFixed(1)}s`
         : '';
       return `${prefix}{bold}{white-fg}[done]{/white-fg}{/bold}${dur}${cost}`;
     }
@@ -135,31 +165,57 @@ export function formatEvent(event: StreamEvent): string | null {
 /** Format a stream event as plain text (no blessed markup). */
 export function formatEventPlain(event: StreamEvent): string | null {
   const ts = event.timestamp
-    ? new Date(event.timestamp).toLocaleTimeString()
+    ? new Date(event.timestamp as string).toLocaleTimeString()
     : '';
   const prefix = ts ? `${ts} ` : '';
 
   switch (event.type) {
     case 'assistant': {
-      if (event.subtype === 'text' && event.content_block?.text) {
-        const text = event.content_block.text.slice(0, 200);
-        return `${prefix}[assistant] ${text}`;
+      // Claude SDK format: event.message.content is an array of content blocks
+      const content = (event.message as { content?: Array<{ type: string; text?: string; name?: string; input?: unknown }> } | undefined)?.content ?? [];
+      const lines: string[] = [];
+      for (const block of content) {
+        if (block.type === 'text' && block.text) {
+          const text = block.text.replace(/\n/g, ' ').slice(0, 200);
+          lines.push(`${prefix}[assistant] ${text}`);
+        } else if (block.type === 'tool_use' && block.name) {
+          const inputStr = block.input ? JSON.stringify(block.input).slice(0, 80) : '';
+          lines.push(`${prefix}[tool] ${block.name}${inputStr ? ' ' + inputStr : ''}`);
+        }
+      }
+      // Legacy streaming format fallback
+      if (lines.length === 0) {
+        if (event.subtype === 'text' && event.content_block?.text) {
+          const text = (event.content_block.text as string).slice(0, 200);
+          lines.push(`${prefix}[assistant] ${text}`);
+        } else if (event.content_block?.name) {
+          lines.push(`${prefix}[tool] ${event.content_block.name}`);
+        }
+      }
+      return lines.length > 0 ? lines.join('\n') : null;
+    }
+    case 'user': {
+      const content = (event.message as { content?: Array<{ type: string }> } | undefined)?.content ?? [];
+      const resultCount = content.filter((b: { type: string }) => b.type === 'tool_result').length;
+      if (resultCount > 0) {
+        return `${prefix}[result] ${resultCount} tool result${resultCount > 1 ? 's' : ''}`;
       }
       return null;
     }
+    // Legacy streaming event types
     case 'tool_use': {
       const name = event.content_block?.name ?? 'unknown';
-      return `${prefix}[tool] ${name}`;
+      return `${prefix}[tool] ${String(name)}`;
     }
     case 'tool_result': {
       return `${prefix}[result] tool completed`;
     }
     case 'result': {
       const cost = event.total_cost_usd
-        ? ` ($${event.total_cost_usd.toFixed(4)})`
+        ? ` ($${(event.total_cost_usd as number).toFixed(4)})`
         : '';
       const dur = event.duration_ms
-        ? ` ${(event.duration_ms / 1000).toFixed(1)}s`
+        ? ` ${((event.duration_ms as number) / 1000).toFixed(1)}s`
         : '';
       return `${prefix}[done]${dur}${cost}`;
     }

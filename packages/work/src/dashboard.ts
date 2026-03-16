@@ -713,6 +713,54 @@ export async function dashboard(): Promise<void> {
     }, 10);
   });
 
+  // Enter on Task Pipeline → open full-screen log overlay for the selected task
+  pipelineBox.key(['enter'], async () => {
+    const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
+    // Pipeline items array: [legendLine, ...treeLines], so treeLines start at index 1.
+    // Extract the task ID from the selected line using a regex.
+    const items = (pipelineBox as unknown as { items: Array<{ getText?: () => string; content?: string }> }).items;
+    const rawItem = items[idx];
+    const rawText: string = typeof rawItem?.getText === 'function'
+      ? rawItem.getText()
+      : (rawItem?.content ?? String(rawItem ?? ''));
+    // Strip blessed markup tags to get plain text, then extract task ID
+    const plain = rawText.replace(/\{[^}]+\}/g, '');
+    const match = plain.match(/tq-[a-f0-9]+(?:\.[a-f0-9]+)*/i);
+    if (!match) {
+      // Selected item has no task ID (e.g. legend line) — do nothing
+      return;
+    }
+    const taskId = match[0];
+
+    // Find the log file for this task (flat layout: data/work-logs/<task-id>.jsonl)
+    const base = workLogsDir();
+    let logPath: string | null = null;
+    try {
+      const entries = await readdir(base);
+      const taskPrefix = taskId + '.';
+      const exactName = taskId + '.jsonl';
+      const matchingFiles = entries.filter(e =>
+        e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
+      );
+      if (matchingFiles.length > 0) {
+        let latestMtime = 0;
+        for (const f of matchingFiles) {
+          const p = join(base, f);
+          const s = await stat(p);
+          if (s.mtimeMs > latestMtime) {
+            latestMtime = s.mtimeMs;
+            logPath = p;
+          }
+        }
+      }
+    } catch {
+      // no logs dir — logPath stays null
+    }
+
+    const title = `Task ${taskId}`;
+    await showLogOverlay(title, logPath);
+  });
+
   // ── Start ──────────────────────────────────────────────────────────────
 
   workersList.focus();
