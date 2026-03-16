@@ -153,14 +153,19 @@ export async function fireAlert(
 // Convenience: process a batch of worker signals into alerts
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns true if any signal was a rate_limited event (callers should shut down).
+ */
 export async function processSignals(
   cfg: ConductorConfig,
   state: ConductorState,
   log: LogFn,
   signals: WorkerSignal[],
-): Promise<void> {
+): Promise<boolean> {
+  let rateLimited = false;
   for (const signal of signals) {
     if (signal.type === 'rate_limited') {
+      rateLimited = true;
       // Extend the spawning hold-off to cover the reported retry_after time.
       if (signal.retry_after) {
         const current = state.rateLimitedUntil ? new Date(state.rateLimitedUntil).getTime() : 0;
@@ -198,4 +203,5 @@ export async function processSignals(
       );
     }
   }
+  return rateLimited;
 }

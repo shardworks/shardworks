@@ -112,7 +112,7 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
     log('debug', `Tick #${state.stats.tickCount}`);
 
     try {
-      await tick(cfg, state, log, setPhase);
+      await tick(cfg, state, log, setPhase, shutdown);
     } catch (err) {
       log('error', 'Tick failed with unexpected error', { error: String(err) });
       setPhase('idle');
@@ -132,6 +132,7 @@ async function tick(
   state: ConductorState,
   log: LogFn,
   setPhase: (p: Phase) => void,
+  shutdown: (reason: string) => Promise<void>,
 ): Promise<void> {
   // ------------------------------------------------------------------
   // 0. Drain the worker signal file — process rate-limit / crash events
@@ -142,7 +143,12 @@ async function tick(
     state.signalFileOffset = newOffset;
     if (signals.length > 0) {
       log('info', `Processing ${signals.length} worker signal(s)`);
-      await processSignals(cfg, state, log, signals);
+      const rateLimited = await processSignals(cfg, state, log, signals);
+      if (rateLimited) {
+        log('warn', 'Rate limit signal received — shutting down');
+        await shutdown('rate_limited');
+        return;
+      }
     }
   } catch (err) {
     log('warn', 'Failed to read signal file', { error: String(err) });
