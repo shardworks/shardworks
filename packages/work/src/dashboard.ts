@@ -172,7 +172,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     style: { bg: 'blue', fg: 'white' },
     tags: true,
-    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle completed subtrees',
+    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle completed subtrees',
   });
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -494,6 +494,88 @@ export async function dashboard(): Promise<void> {
     }
   }
 
+  // ── Full-screen log overlay ────────────────────────────────────────────
+
+  /**
+   * Open a full-screen overlay showing formatted log content for a given log
+   * file path. If logPath is null, shows a "no logs" message. Pressing Escape
+   * or q closes the overlay and returns focus to the dashboard.
+   */
+  async function showLogOverlay(title: string, logPath: string | null): Promise<void> {
+    const overlay = blessed.box({
+      parent: screen,
+      top: 0,
+      left: 0,
+      width: '100%',
+      height: '100%',
+      label: ` ${title} — {bold}Esc{/bold}/{bold}q{/bold} to close `,
+      border: { type: 'line' },
+      style: {
+        border: { fg: 'cyan' },
+        label: { fg: 'white', bold: true },
+        bg: 'black',
+        fg: 'white',
+      },
+      tags: true,
+      scrollable: true,
+      alwaysScroll: true,
+      scrollbar: { style: { bg: 'grey' } },
+      mouse: true,
+      keys: true,
+      vi: true,
+      padding: { left: 1, right: 1, top: 0, bottom: 0 },
+    });
+
+    // Render log content into the overlay
+    if (!logPath) {
+      overlay.setContent('{grey-fg}No logs available for this task{/grey-fg}');
+    } else {
+      overlay.setContent('{grey-fg}Loading…{/grey-fg}');
+      screen.render();
+
+      const lines: string[] = [];
+      await new Promise<void>((resolve) => {
+        const stream = createReadStream(logPath, { encoding: 'utf8' });
+        const rl = createInterface({ input: stream });
+        rl.on('line', (line: string) => {
+          try {
+            const event = JSON.parse(line) as StreamEvent;
+            const formatted = formatEvent(event);
+            if (formatted) lines.push(formatted);
+          } catch {
+            // skip unparseable lines
+          }
+        });
+        rl.on('close', resolve);
+      });
+
+      if (lines.length === 0) {
+        overlay.setContent('{grey-fg}Log file exists but contains no displayable messages{/grey-fg}');
+      } else {
+        overlay.setContent(lines.join('\n'));
+      }
+
+      // Scroll to the bottom so the most recent content is visible
+      overlay.setScrollPerc(100);
+    }
+
+    screen.render();
+    overlay.focus();
+
+    function closeOverlay(): void {
+      overlay.destroy();
+      // Restore focus based on the currently focused panel
+      if (focusedPanel === 'pipeline') {
+        pipelineBox.focus();
+      } else {
+        workersList.focus();
+      }
+      screen.render();
+    }
+
+    overlay.key(['escape', 'q'], closeOverlay);
+  }
+
   // ── Refresh loop ───────────────────────────────────────────────────────
 
   async function refresh(): Promise<void> {
@@ -578,6 +660,44 @@ export async function dashboard(): Promise<void> {
     if (activeWorkers[index]) {
       await tailWorkerLog(activeWorkers[index]!);
     }
+  });
+
+  // Enter on Active Workers → open full-screen log overlay for selected worker
+  workersList.key(['enter'], async () => {
+    const idx = (workersList as unknown as { selected: number }).selected ?? 0;
+    const worker = activeWorkers[idx];
+    if (!worker) {
+      await showLogOverlay('No worker selected', null);
+      return;
+    }
+
+    // Find the log file for this worker's task (same logic as tailWorkerLog)
+    const base = workLogsDir();
+    let logPath: string | null = null;
+    try {
+      const entries = await readdir(base);
+      const taskPrefix = worker.taskId + '.';
+      const exactName = worker.taskId + '.jsonl';
+      const matchingFiles = entries.filter(e =>
+        e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
+      );
+      if (matchingFiles.length > 0) {
+        let latestMtime = 0;
+        for (const f of matchingFiles) {
+          const p = join(base, f);
+          const s = await stat(p);
+          if (s.mtimeMs > latestMtime) {
+            latestMtime = s.mtimeMs;
+            logPath = p;
+          }
+        }
+      }
+    } catch {
+      // no logs dir — logPath stays null
+    }
+
+    const title = `${worker.agentId.slice(0, 8)} │ ${worker.taskId} │ ${worker.description.slice(0, 40)}`;
+    await showLogOverlay(title, logPath);
   });
 
   // Also handle up/down navigation updating the log panel
