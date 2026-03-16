@@ -83,6 +83,29 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
 }
 
 // ---------------------------------------------------------------------------
+// Child-delegation helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Follows eligible-child redirects: if `taskRow` has eligible direct children,
+ * returns the highest-priority eligible descendant (the deepest "leaf" in the
+ * eligible subtree).  All SELECTs use FOR UPDATE so they participate in the
+ * caller's transaction and prevent concurrent claims of the same child.
+ */
+async function findEligibleLeaf(conn: PoolConnection, taskRow: TaskRow): Promise<TaskRow> {
+  const [childRows] = await conn.execute<TaskRow[]>(
+    `SELECT * FROM tasks
+     WHERE parent_id = ? AND status = 'eligible'
+     ORDER BY priority DESC, eligible_at ASC
+     LIMIT 1
+     FOR UPDATE`,
+    [taskRow.id],
+  );
+  if (childRows.length === 0) return taskRow;
+  return findEligibleLeaf(conn, childRows[0]!);
+}
+
+// ---------------------------------------------------------------------------
 // T05 — Enqueue + get + list
 // ---------------------------------------------------------------------------
 
@@ -506,16 +529,20 @@ export async function claim(agentId: string, draft = false, role?: string): Prom
     if (rows.length === 0) return { task: null };
 
     const row = rows[0]!;
-    const now = new Date();
 
+    // For eligible tasks: if this task has eligible children, implement the
+    // highest-priority eligible descendant instead of the parent directly.
+    const targetRow = draft ? row : await findEligibleLeaf(conn, row);
+
+    const now = new Date();
     await conn.execute(
       `UPDATE tasks SET status = 'in_progress', claimed_by = ?, claimed_at = ? WHERE id = ?`,
-      [agentId, now, row.id],
+      [agentId, now, targetRow.id],
     );
 
-    const depsMap = await attachDeps(conn, [row.id]);
+    const depsMap = await attachDeps(conn, [targetRow.id]);
     return {
-      task: rowToTask({ ...row, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(row.id) ?? []),
+      task: rowToTask({ ...targetRow, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(targetRow.id) ?? []),
     };
   });
 }
@@ -541,15 +568,19 @@ export async function claimById(taskId: string, agentId: string, draft = false):
       );
     }
 
+    // For eligible tasks: if this task has eligible children, redirect to the
+    // highest-priority eligible descendant instead of claiming the parent.
+    const targetRow = row.status === 'eligible' ? await findEligibleLeaf(conn, row) : row;
+
     const now = new Date();
     await conn.execute(
       `UPDATE tasks SET status = 'in_progress', claimed_by = ?, claimed_at = ? WHERE id = ?`,
-      [agentId, now, row.id],
+      [agentId, now, targetRow.id],
     );
 
-    const depsMap = await attachDeps(conn, [row.id]);
+    const depsMap = await attachDeps(conn, [targetRow.id]);
     return {
-      task: rowToTask({ ...row, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(row.id) ?? []),
+      task: rowToTask({ ...targetRow, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(targetRow.id) ?? []),
     };
   });
 }

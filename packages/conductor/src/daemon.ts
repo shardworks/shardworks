@@ -247,10 +247,15 @@ async function tick(
  *      high-priority draft is refined before a lower-priority eligible task
  *      is started.  If the top draft priority >= top eligible priority,
  *      spawn a refiner; otherwise spawn an implementer.
- *   3. Implementer — if there are regular eligible tasks (and no competing draft).
- *   4. Refiner — if there are draft tasks (limited to one per tick to avoid
- *      races where two refiners claim the same draft).
+ *   3. Implementer — if there are directly implementable eligible tasks.
+ *   4. Refiner — if there are draft tasks (including children of eligible
+ *      parent containers).  Limited to one per tick to avoid races where
+ *      two refiners claim the same draft.
  *   5. null — nothing to do, notify humans.
+ *
+ * "Implementable" eligible tasks exclude parent containers whose children are
+ * all in draft state (not yet refined).  Those parents need a refiner first;
+ * an implementer spawned for them would release and exit immediately.
  */
 function decideNextAction(
   counts: TaskCounts,
@@ -259,14 +264,16 @@ function decideNextAction(
   if (counts.eligiblePlanner > 0) return 'planner';
 
   const eligibleWork = counts.eligible - counts.eligiblePlanner;
+  // Exclude eligible parents that can't be implemented yet (children still draft).
+  const implementableEligible = Math.max(0, eligibleWork - counts.eligibleBlockedByChildren);
   const canRefine = counts.draft > 0 && spawnedThisTick === 0;
 
-  // Both draft and eligible tasks exist — pick based on top priority
-  if (canRefine && eligibleWork > 0) {
+  // Both directly-implementable and draft tasks exist — pick based on top priority
+  if (canRefine && implementableEligible > 0) {
     return counts.maxDraftPriority >= counts.maxEligiblePriority ? 'refiner' : 'implementer';
   }
 
-  if (eligibleWork > 0) return 'implementer';
+  if (implementableEligible > 0) return 'implementer';
   if (canRefine) return 'refiner';
 
   return null;

@@ -52,6 +52,13 @@ export interface TaskCounts {
   maxDraftPriority: number;
   /** Highest priority among non-planner eligible tasks (0 if none). Used for priority-aware scheduling. */
   maxEligiblePriority: number;
+  /**
+   * Number of non-planner eligible tasks that are parent containers with at least
+   * one draft child but no eligible children.  These tasks cannot be implemented
+   * until their draft children are refined — the conductor should prefer a refiner
+   * over a wasted implementer slot.
+   */
+  eligibleBlockedByChildren: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +88,7 @@ export async function queryCounts(): Promise<TaskCounts> {
     failed: 0,
     maxDraftPriority: 0,
     maxEligiblePriority: 0,
+    eligibleBlockedByChildren: 0,
   };
 
   for (const row of rows) {
@@ -104,6 +112,27 @@ export async function queryCounts(): Promise<TaskCounts> {
       case 'completed':   counts.completed  += n; break;
       case 'failed':      counts.failed     += n; break;
     }
+  }
+
+  // Count eligible non-planner tasks that have draft children but no eligible
+  // children — these are parent containers that an implementer cannot work on
+  // directly yet (children need refining first).
+  try {
+    const [blockedRows] = await pool.execute<mysql.RowDataPacket[]>(
+      `SELECT COUNT(DISTINCT t.id) AS cnt
+       FROM tasks t
+       WHERE t.status = 'eligible'
+         AND (t.assigned_role IS NULL OR t.assigned_role != 'planner')
+         AND EXISTS (
+           SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.status = 'draft'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.status = 'eligible'
+         )`,
+    );
+    counts.eligibleBlockedByChildren = Number(blockedRows[0]?.['cnt'] ?? 0);
+  } catch {
+    // Non-fatal — fall back to 0; worst case we spawn a wasted implementer
   }
 
   return counts;

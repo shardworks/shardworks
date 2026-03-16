@@ -69,9 +69,11 @@ async function main(): Promise<void> {
   let conducted: ConductedConfig;
 
   if (config.mode === 'conducted') {
-    // Conducted mode: claim the specific task by ID with our ephemeral agent ID
-    await claimTaskById(config.agentId, config.workDir, config.taskId, role.claimDraft);
-    conducted = config;
+    // Conducted mode: claim the specific task by ID with our ephemeral agent ID.
+    // claimTaskById may redirect to a child task if the target has eligible children,
+    // so use the returned ID (which may differ from config.taskId).
+    const claimedTaskId = await claimTaskById(config.agentId, config.workDir, config.taskId, role.claimDraft);
+    conducted = { ...config, taskId: claimedTaskId };
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
     const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft, role.id);
