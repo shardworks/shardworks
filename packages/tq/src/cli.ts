@@ -33,6 +33,7 @@ import {
   getMaxPriority,
   statusCounts,
   history,
+  diff,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -523,6 +524,21 @@ program
   .description('Show all Dolt commits that modified a given task (read-only)')
   .action(async (id: string) => {
     await run(() => history(id), { skipSchema: true });
+  });
+
+// ── tq diff ──────────────────────────────────────────────────────────────────
+
+program
+  .command('diff <commit-a> <commit-b>')
+  .description(
+    'Show task changes between two Dolt commits (read-only).\n' +
+    'Returns every task row that was added, modified, or removed,\n' +
+    'with before/after values for status, description, priority,\n' +
+    'claimed_by, and assigned_role.\n' +
+    'Commits may be hashes, branch names, or tags.',
+  )
+  .action(async (commitA: string, commitB: string) => {
+    await run(() => diff(commitA, commitB), { skipSchema: true });
   });
 
 program.parse();
