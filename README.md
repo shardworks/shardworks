@@ -81,6 +81,10 @@ work dashboard
 
 The dashboard shows fleet status, active workers, a live log viewer, and the task pipeline tree. Keyboard: `Tab` to switch panels, `↑↓` to navigate, `r` to refresh, `q` to quit.
 
+## Operating the System
+
+See the [Operator's Manual](docs/operators-manual.md) for the complete guide to running a Shardworks fleet — starting/stopping the conductor, managing the backlog, monitoring workers, and recovering from failures. The manual also covers **Nexus**, a dedicated Claude Code agent persona you can launch with `claude --agent nexus` for interactive fleet operations.
+
 ## Project Structure
 
 ```
