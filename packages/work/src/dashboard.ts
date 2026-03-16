@@ -59,21 +59,21 @@ export async function dashboard(): Promise<void> {
 
   // ── Layout ──────────────────────────────────────────────────────────────
 
-  // Left column (50%)
+  // Left column (33%)
   const leftCol = blessed.box({
     parent: screen,
     top: 0,
     left: 0,
-    width: '50%',
+    width: '33%',
     height: '100%',
   });
 
-  // Right column (50%)
+  // Right column (67%)
   const rightCol = blessed.box({
     parent: screen,
     top: 0,
-    left: '50%',
-    width: '50%',
+    left: '33%',
+    width: '67%',
     height: '100%',
   });
 
@@ -139,9 +139,9 @@ export async function dashboard(): Promise<void> {
     padding: { left: 1, right: 1 },
   } as Widgets.LogOptions);
 
-  // ── Pipeline (right column, full height) ───────────────────────────────
+  // ── Pipeline container (right column, full height) ─────────────────────
 
-  const pipelineBox = blessed.list({
+  const pipelineContainer = blessed.box({
     parent: rightCol,
     top: 0,
     left: 0,
@@ -151,6 +151,33 @@ export async function dashboard(): Promise<void> {
     border: { type: 'line' },
     style: {
       border: { fg: 'magenta' },
+      label: { fg: 'white', bold: true },
+    },
+    tags: true,
+  });
+
+  // ── Pipeline legend (1 line, pinned at top) ────────────────────────────
+
+  const pipelineLegend = blessed.box({
+    parent: pipelineContainer,
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: 1,
+    tags: true,
+    padding: { left: 1, right: 1 },
+    content: `{grey-fg}Legend:{/grey-fg} {green-fg}✓{/green-fg} done  {yellow-fg}▶{/yellow-fg} running  {cyan-fg}○{/cyan-fg} eligible  {grey-fg}…{/grey-fg} pending  {red-fg}✗{/red-fg} failed  {grey-fg}□{/grey-fg} draft`,
+  });
+
+  // ── Pipeline list (scrollable task tree, below the legend) ─────────────
+
+  const pipelineBox = blessed.list({
+    parent: pipelineContainer,
+    top: 1,
+    left: 0,
+    width: '100%',
+    height: '100%-1',
+    style: {
       selected: { bg: 'blue', fg: 'white' },
       item: { fg: 'white' },
     },
@@ -186,8 +213,6 @@ export async function dashboard(): Promise<void> {
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
   let hideCompletedSubtrees = true;
-  // Parallel to the tree lines rendered in pipelineBox (offset by 1 for the legend line)
-  let pipelineTaskIds: string[] = [];
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -254,7 +279,6 @@ export async function dashboard(): Promise<void> {
 
   interface TaskTreeResult {
     lines: string[];
-    taskIds: string[];  // parallel to lines: the full task ID for each rendered line
     hiddenCount: number;
   }
 
@@ -284,27 +308,75 @@ export async function dashboard(): Promise<void> {
       }
 
       const lines: string[] = [];
-      const taskIds: string[] = [];
-      function renderNode(node: TaskRow, indent: number, parentId?: string): void {
-        const prefix = indent === 0 ? '' : '  '.repeat(indent - 1) + '├─ ';
+
+      /**
+       * Render a task tree node.
+       * @param node          – the task row
+       * @param indent        – depth (0 = root)
+       * @param continuations – continuations[i] = true means level i still has
+       *                        siblings below → draw │ at that column position.
+       *                        Length === indent (one entry per ancestor level).
+       * @param isLast        – is this the last sibling in its parent's list?
+       *                        Unused for root nodes (indent=0, no connector).
+       */
+      function renderNode(
+        node: TaskRow,
+        indent: number,
+        continuations: boolean[],
+        isLast: boolean,
+      ): void {
+        // ── Connector prefix ──────────────────────────────────────────────
+        let prefix = '';
+        if (indent > 0) {
+          // Ancestor levels: vertical bar if that level still has more siblings
+          for (let i = 0; i < indent - 1; i++) {
+            prefix += continuations[i] ? '│  ' : '   ';
+          }
+          // Final connector for this node
+          prefix += isLast ? '└─ ' : '├─ ';
+        }
+        // prefix visual width: indent * 3 columns (each section = 3 cols)
+        const prefixLen = indent * 3;
+
         const statusIcon = statusSymbol(node.status, node.assigned_role);
-        const desc = node.description.length > 50
-          ? node.description.slice(0, 47) + '...'
-          : node.description;
-        // Abbreviate child IDs: show only the suffix after the parent prefix
-        // e.g. parent tq-abc123, child tq-abc123.def456 → display .def456
-        let displayId = node.id;
-        if (indent > 0 && parentId && node.id.startsWith(parentId)) {
-          displayId = node.id.slice(parentId.length);
+
+        // ── Dynamic description width ─────────────────────────────────────
+        // panel_width = 67% of terminal width (right column)
+        // subtract: border(2) + padding(2) + prefix + icon(1) + space(1) + id + space(1)
+        const panelWidth = Math.floor((screen.width as number) * 0.67);
+        const idLen = node.id.length;
+        const availForDesc = panelWidth - 2 - 2 - prefixLen - 1 - 1 - idLen - 1;
+        const maxDesc = Math.max(availForDesc, 0);
+
+        let desc: string;
+        if (node.description.length > maxDesc) {
+          desc = maxDesc <= 3
+            ? node.description.slice(0, maxDesc)
+            : node.description.slice(0, maxDesc - 3) + '...';
+        } else {
+          desc = node.description.padEnd(maxDesc);
         }
-        lines.push(`${prefix}${statusIcon} ${displayId} ${desc}`);
-        taskIds.push(node.id);
-        // Sort children by priority DESC (defensive: SQL already orders this way,
-        // but an explicit sort ensures consistent rendering regardless of query order)
+
+        // ── Full-line color ───────────────────────────────────────────────
+        // Wrap the entire line in the status color. The icon's own inner color
+        // tags take precedence over this outer wrapper.
+        const lineColor = statusLineColor(node.status, node.assigned_role);
+        const colorOpen = `{${lineColor}-fg}`;
+        const colorClose = `{/${lineColor}-fg}`;
+
+        lines.push(`${colorOpen}${prefix}${statusIcon} ${node.id} ${desc}${colorClose}`);
+
+        // ── Recurse into children ─────────────────────────────────────────
         const kids = (children.get(node.id) ?? []).sort((a, b) => b.priority - a.priority);
-        for (const kid of kids) {
-          renderNode(kid, indent + 1, node.id);
-        }
+        kids.forEach((kid, idx) => {
+          const kidIsLast = idx === kids.length - 1;
+          // Root nodes (indent=0) contribute no continuation bar — their
+          // children start a fresh connector chain.
+          const kidContinuations = indent === 0
+            ? []
+            : [...continuations, !isLast];
+          renderNode(kid, indent + 1, kidContinuations, kidIsLast);
+        });
       }
 
       // Render root tasks (no parent), sorted by priority DESC
@@ -315,12 +387,13 @@ export async function dashboard(): Promise<void> {
           hiddenCount++;
           continue;
         }
-        renderNode(root, 0);
+        // isLast is irrelevant for depth-0 roots (no connector drawn)
+        renderNode(root, 0, [], false);
       }
 
-      return { lines, taskIds, hiddenCount };
+      return { lines, hiddenCount };
     } catch (err) {
-      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], taskIds: [], hiddenCount: 0 };
+      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], hiddenCount: 0 };
     }
   }
 
@@ -333,8 +406,6 @@ export async function dashboard(): Promise<void> {
         : status === 'pending' ? '…'
         : status === 'failed' ? '✗'
         : status === 'draft' ? '□'
-        : status === 'cancelled' ? '⊘'
-        : status === 'blocked' ? '⊗'
         : '?';
       return `{red-fg}${icon}{/red-fg}`;
     }
@@ -345,9 +416,26 @@ export async function dashboard(): Promise<void> {
       case 'pending':     return '{grey-fg}…{/grey-fg}';
       case 'failed':      return '{#FF8C00-fg}✗{/#FF8C00-fg}';
       case 'draft':       return '{grey-fg}□{/grey-fg}';
-      case 'cancelled':   return '{grey-fg}⊘{/grey-fg}';
-      case 'blocked':     return '{#FF8C00-fg}⊗{/#FF8C00-fg}';
       default:            return '{white-fg}?{/white-fg}';
+    }
+  }
+
+  /**
+   * Returns the blessed color tag name for a status (used to colorize the full
+   * tree line). Human-role tasks are always red.
+   */
+  function statusLineColor(status: string, assignedRole?: string | null): string {
+    if (assignedRole === 'human') return 'red';
+    switch (status) {
+      case 'completed':   return 'green';
+      case 'in_progress': return 'green';
+      case 'eligible':    return 'cyan';
+      case 'pending':     return 'grey';
+      case 'failed':      return '#FF8C00';
+      case 'draft':       return 'grey';
+      case 'cancelled':   return 'grey';
+      case 'blocked':     return '#FF8C00';
+      default:            return 'white';
     }
   }
 
@@ -618,7 +706,7 @@ export async function dashboard(): Promise<void> {
       overlay.destroy();
       // Restore focus based on the currently focused panel
       if (focusedPanel === 'pipeline') {
-        pipelineBox.focus();
+        pipelineBox.focus(); // focus the scrollable list, not the container
       } else {
         workersList.focus();
       }
@@ -643,22 +731,19 @@ export async function dashboard(): Promise<void> {
       renderWorkersList(workers);
 
       // Update pipeline
-      const { lines: treeLines, taskIds: treeTaskIds, hiddenCount } = tree;
-      pipelineTaskIds = treeTaskIds;
+      const { lines: treeLines, hiddenCount } = tree;
       const hiddenLabel = hiddenCount > 0
         ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
         : '';
-      pipelineBox.setLabel(` Task Pipeline${hiddenLabel} `);
-      const legendLine = `{grey-fg}Legend:{/grey-fg} {green-fg}✓{/green-fg} done  {yellow-fg}▶{/yellow-fg} running  {cyan-fg}○{/cyan-fg} eligible  {grey-fg}…{/grey-fg} pending  {red-fg}✗{/red-fg} failed  {grey-fg}□{/grey-fg} draft`;
+      pipelineContainer.setLabel(` Task Pipeline${hiddenLabel} `);
       if (treeLines.length === 0) {
         pipelineBox.setItems([
-          legendLine,
           hiddenCount > 0
             ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
             : '{grey-fg}No tasks{/grey-fg}',
         ]);
       } else {
-        pipelineBox.setItems([legendLine, ...treeLines]);
+        pipelineBox.setItems(treeLines);
       }
 
       // Auto-select first worker's log if none selected
@@ -689,11 +774,11 @@ export async function dashboard(): Promise<void> {
       focusedPanel = 'pipeline';
       pipelineBox.focus();
       (workersList.style as Record<string, unknown>).border = { fg: 'green' };
-      (pipelineBox.style as Record<string, unknown>).border = { fg: 'white' };
+      (pipelineContainer.style as Record<string, unknown>).border = { fg: 'white' };
     } else {
       focusedPanel = 'workers';
       workersList.focus();
-      (pipelineBox.style as Record<string, unknown>).border = { fg: 'magenta' };
+      (pipelineContainer.style as Record<string, unknown>).border = { fg: 'magenta' };
       (workersList.style as Record<string, unknown>).border = { fg: 'white' };
     }
     screen.render();
@@ -769,14 +854,20 @@ export async function dashboard(): Promise<void> {
   // Enter on Task Pipeline → open full-screen log overlay for the selected task
   pipelineBox.key(['enter'], async () => {
     const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
-    // Pipeline items: [legendLine, ...treeLines]. treeLines start at index 1.
-    // pipelineTaskIds[i] corresponds to treeLines[i], i.e. pipelineBox item index i+1.
-    // (IDs may be abbreviated in display, so we use the parallel taskIds array.)
-    const taskId = idx > 0 ? (pipelineTaskIds[idx - 1] ?? null) : null;
-    if (!taskId) {
+    // Extract the task ID from the selected line using a regex.
+    const items = (pipelineBox as unknown as { items: Array<{ getText?: () => string; content?: string }> }).items;
+    const rawItem = items[idx];
+    const rawText: string = typeof rawItem?.getText === 'function'
+      ? rawItem.getText()
+      : (rawItem?.content ?? String(rawItem ?? ''));
+    // Strip blessed markup tags to get plain text, then extract task ID
+    const plain = rawText.replace(/\{[^}]+\}/g, '');
+    const match = plain.match(/tq-[a-f0-9]+(?:\.[a-f0-9]+)*/i);
+    if (!match) {
       // Selected item has no task ID (e.g. legend line) — do nothing
       return;
     }
+    const taskId = match[0];
 
     // Find the log file for this task (flat layout: data/work-logs/<task-id>.jsonl)
     const base = workLogsDir();
