@@ -71,12 +71,14 @@ program
   .option('-x, --batch-plan-threshold <n>', 'Tasks since last plan before triggering full-backlog planning', '20')
   .option('--poll-interval <seconds>', 'Seconds between ticks', '30')
   .option('--stale-after <duration>', 'Reap tasks stale longer than this (e.g. 30m)', '30m')
+  .option('--alert-webhook <url>', 'Webhook URL for urgent alerts (Slack/Discord/ntfy.sh/etc.)')
   .option('--workdir <path>', 'Working directory (default: $WORK_DIR or cwd)')
   .action(async (opts: {
     maxWorkers: string;
     batchPlanThreshold: string;
     pollInterval: string;
     staleAfter: string;
+    alertWebhook?: string;
     workdir?: string;
   }) => {
     const workDir = opts.workdir ?? workDirFromEnvOrCwd();
@@ -100,6 +102,7 @@ program
         CONDUCTOR_BATCH_PLAN_THRESHOLD: opts.batchPlanThreshold,
         CONDUCTOR_POLL_INTERVAL: opts.pollInterval,
         CONDUCTOR_STALE_AFTER: opts.staleAfter,
+        ...(opts.alertWebhook ? { CONDUCTOR_ALERT_WEBHOOK: opts.alertWebhook } : {}),
       },
     });
 

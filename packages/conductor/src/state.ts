@@ -88,14 +88,23 @@ export interface ConductorStats {
   startedAt: string;
 }
 
+export type AlertType = 'rate_limited' | 'task_exhaustion' | 'crashed';
+
 export interface ConductorState {
   phase: Phase;
   lastTickAt: string | null;
   lastFullPlanAt: string | null;
   lastNoWorkAt: string | null;
+  /** Byte offset into data/conductor-signals.jsonl — tracks consumption progress. */
+  signalFileOffset: number;
+  /** ISO timestamps of when each alert type was last fired, for cooldown tracking. */
+  lastAlertAt: Partial<Record<AlertType, string>>;
   activeWorkers: ActiveWorker[];
   stats: ConductorStats;
 }
+
+/** Structured logger function passed through the daemon tick stack. */
+export type LogFn = (level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: unknown) => void;
 
 export function initialState(): ConductorState {
   return {
@@ -103,6 +112,8 @@ export function initialState(): ConductorState {
     lastTickAt: null,
     lastFullPlanAt: null,
     lastNoWorkAt: null,
+    signalFileOffset: 0,
+    lastAlertAt: {},
     activeWorkers: [],
     stats: {
       tasksReaped: 0,

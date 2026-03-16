@@ -6,9 +6,12 @@ import {
   clearPid,
   type ConductorState,
   type Phase,
+  type LogFn,
 } from './state.js';
 import { queryCounts, closePool, queryTasksSince, type TaskCounts } from './db.js';
 import { reapStale, spawnWorker, enqueuePlannerTask, type SpawnedWorker } from './spawn.js';
+import { readNewSignals } from './signals.js';
+import { processSignals, fireAlert } from './alerts.js';
 
 // ---------------------------------------------------------------------------
 // Daemon entry point
@@ -103,7 +106,6 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
 // Single tick
 // ---------------------------------------------------------------------------
 
-type LogFn = (level: 'info' | 'warn' | 'error' | 'debug', msg: string, data?: unknown) => void;
 
 async function tick(
   cfg: ConductorConfig,
@@ -111,6 +113,21 @@ async function tick(
   log: LogFn,
   setPhase: (p: Phase) => void,
 ): Promise<void> {
+  // ------------------------------------------------------------------
+  // 0. Drain the worker signal file — process rate-limit / crash events
+  //    emitted by workers since the last tick.
+  // ------------------------------------------------------------------
+  try {
+    const { signals, newOffset } = await readNewSignals(cfg.workDir, state.signalFileOffset);
+    state.signalFileOffset = newOffset;
+    if (signals.length > 0) {
+      log('info', `Processing ${signals.length} worker signal(s)`);
+      await processSignals(cfg, state, log, signals);
+    }
+  } catch (err) {
+    log('warn', 'Failed to read signal file', { error: String(err) });
+  }
+
   // ------------------------------------------------------------------
   // 1. Reap stale in_progress tasks
   // ------------------------------------------------------------------
@@ -189,6 +206,10 @@ async function tick(
     if (!action) {
       state.lastNoWorkAt = new Date().toISOString();
       log('warn', 'No eligible tasks available — waiting for human input', counts);
+      await fireAlert(cfg, state, log, 'task_exhaustion',
+        'Task queue is empty — no draft, eligible, or planner tasks remain',
+        counts as unknown as Record<string, unknown>,
+      );
       break;
     }
 

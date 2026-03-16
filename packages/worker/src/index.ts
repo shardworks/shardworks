@@ -5,6 +5,8 @@ import { claimTask, claimTaskById, releaseTask } from './claim.js';
 import { launch } from './launcher.js';
 import type { ConductedConfig } from './config.js';
 import type { LaunchResult } from './launcher.js';
+import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Exit codes
@@ -12,6 +14,26 @@ import type { LaunchResult } from './launcher.js';
 
 /** sysexits.h EX_TEMPFAIL — temporary failure, retry later */
 const EX_TEMPFAIL = 75;
+
+// ---------------------------------------------------------------------------
+// Conductor signal file
+// ---------------------------------------------------------------------------
+
+/**
+ * Append a structured signal event to data/conductor-signals.jsonl so the
+ * conductor can react on its next tick (e.g. fire a webhook, create a
+ * sentinel task).  Uses synchronous I/O so it is safe to call before exit.
+ */
+function appendConductorSignal(workDir: string, signal: Record<string, unknown>): void {
+  try {
+    const dir = join(workDir, 'data');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'conductor-signals.jsonl');
+    appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), ...signal }) + '\n');
+  } catch {
+    // Non-fatal — conductor will pick up the situation on the next tick via DB
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Structured exit status (written to stderr before exit)
@@ -73,6 +95,16 @@ async function main(): Promise<void> {
 
   // Rate-limit detection: release the task and exit EX_TEMPFAIL
   if (launchResult.result?.isRateLimit) {
+    // Notify the conductor immediately via the shared signal file
+    appendConductorSignal(conducted.workDir, {
+      type: 'rate_limited',
+      task_id: conducted.taskId,
+      agent_id: conducted.agentId,
+      session_id: launchResult.sessionId,
+      retry_after: launchResult.result.retryAfter,
+      cost_usd: launchResult.result.costUsd,
+    });
+
     try {
       await releaseTask(conducted.agentId, conducted.workDir, conducted.taskId);
     } catch (err) {
@@ -104,6 +136,15 @@ async function main(): Promise<void> {
   } else {
     // Claude crashed without updating task state — release it back to eligible
     // so another worker can pick it up, rather than leaving it stuck in_progress.
+    appendConductorSignal(conducted.workDir, {
+      type: 'crashed',
+      task_id: conducted.taskId,
+      agent_id: conducted.agentId,
+      session_id: launchResult.sessionId,
+      exit_code: launchResult.exitCode,
+      cost_usd: launchResult.result?.costUsd ?? 0,
+    });
+
     try {
       await releaseTask(conducted.agentId, conducted.workDir, conducted.taskId);
     } catch (err) {
