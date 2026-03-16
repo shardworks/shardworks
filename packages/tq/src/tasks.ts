@@ -1704,3 +1704,68 @@ export async function getRelations(taskId: string): Promise<{
     conn.release();
   }
 }
+
+// ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+export interface TaskHistoryEntry {
+  commit_hash: string;
+  committer: string;
+  message: string;
+  from_status: string | null;
+  to_status: string | null;
+  committed_at: Date;
+}
+
+interface HistoryRow extends RowDataPacket {
+  commit_hash: string;
+  committer: string;
+  message: string;
+  from_status: string | null;
+  to_status: string | null;
+  committed_at: Date;
+}
+
+/**
+ * Return all Dolt commits that modified the row for `taskId` in the `tasks`
+ * table, ordered oldest → newest.  Each entry includes the commit hash,
+ * committer, commit message, and the before/after status of the task.
+ */
+export async function history(taskId: string): Promise<TaskHistoryEntry[]> {
+  const conn = await pool.getConnection();
+  try {
+    // Verify task exists
+    const [taskRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM tasks WHERE id = ?',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+
+    const [rows] = await conn.execute<HistoryRow[]>(
+      `SELECT
+         l.commit_hash,
+         l.committer,
+         l.message,
+         d.from_status,
+         d.to_status,
+         l.date AS committed_at
+       FROM dolt_diff_tasks d
+       JOIN dolt_log l ON l.commit_hash = d.to_commit
+       WHERE d.to_id = ? OR d.from_id = ?
+       ORDER BY l.commit_order ASC`,
+      [taskId, taskId],
+    );
+
+    return rows.map((r) => ({
+      commit_hash: r.commit_hash,
+      committer: r.committer,
+      message: r.message,
+      from_status: r.from_status ?? null,
+      to_status: r.to_status ?? null,
+      committed_at: r.committed_at,
+    }));
+  } finally {
+    conn.release();
+  }
+}

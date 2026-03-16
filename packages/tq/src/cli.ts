@@ -32,6 +32,7 @@ import {
   getRelations,
   getMaxPriority,
   statusCounts,
+  history,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -513,6 +514,15 @@ program
       await pool.end().catch(() => undefined);
     }
     process.exit(code);
+  });
+
+// ── tq history ───────────────────────────────────────────────────────────────
+
+program
+  .command('history <id>')
+  .description('Show all Dolt commits that modified a given task (read-only)')
+  .action(async (id: string) => {
+    await run(() => history(id), { skipSchema: true });
   });
 
 program.parse();
