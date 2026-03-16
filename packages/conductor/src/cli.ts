@@ -174,51 +174,73 @@ program
   .command('status')
   .description('Show conductor status and fleet overview')
   .option('--workdir <path>', 'Working directory (default: $WORK_DIR or cwd)')
-  .action(async (opts: { workdir?: string }) => {
+  .option('--watch', 'Re-run status on an interval')
+  .option('--interval <seconds>', 'Refresh interval for --watch mode', '5')
+  .action(async (opts: { workdir?: string; watch?: boolean; interval: string }) => {
     const workDir = opts.workdir ?? workDirFromEnvOrCwd();
 
-    const pid    = await readPid(workDir);
-    const alive  = pid !== null && isAlive(pid);
-    const state  = await readState(workDir);
+    const printStatus = async (): Promise<void> => {
+      const pid    = await readPid(workDir);
+      const alive  = pid !== null && isAlive(pid);
+      const state  = await readState(workDir);
 
-    const status = alive ? '\x1b[32m● running\x1b[0m' : '\x1b[31m○ stopped\x1b[0m';
+      const status = alive ? '\x1b[32m● running\x1b[0m' : '\x1b[31m○ stopped\x1b[0m';
 
-    console.log(`Conductor: ${status}${pid ? `  (PID ${pid})` : ''}`);
-    console.log();
-
-    if (state) {
-      const up = state.stats.startedAt
-        ? `up since ${new Date(state.stats.startedAt).toLocaleString()}`
-        : '';
-      console.log(`  Phase:        ${state.phase}${up ? `  (${up})` : ''}`);
-      console.log(`  Last tick:    ${state.lastTickAt ? new Date(state.lastTickAt).toLocaleString() : 'never'}`);
+      console.log(`Conductor: ${status}${pid ? `  (PID ${pid})` : ''}`);
       console.log();
-      console.log('  Stats:');
-      console.log(`    Ticks run:       ${state.stats.tickCount}`);
-      console.log(`    Workers spawned: ${state.stats.workersSpawned}`);
-      console.log(`    Tasks reaped:    ${state.stats.tasksReaped}`);
 
-      if (state.activeWorkers.length > 0) {
+      if (state) {
+        const up = state.stats.startedAt
+          ? `up since ${new Date(state.stats.startedAt).toLocaleString()}`
+          : '';
+        console.log(`  Phase:        ${state.phase}${up ? `  (${up})` : ''}`);
+        console.log(`  Last tick:    ${state.lastTickAt ? new Date(state.lastTickAt).toLocaleString() : 'never'}`);
         console.log();
-        console.log('  Active workers (last seen):');
-        for (const w of state.activeWorkers) {
-          const workerAlive = isAlive(w.pid);
-          const icon = workerAlive ? '↑' : '↓';
-          const elapsed = w.startedAt
-            ? formatElapsed(Date.now() - new Date(w.startedAt).getTime())
-            : '';
-          console.log(
-            `    ${icon} PID ${String(w.pid).padEnd(7)} role=${w.role.padEnd(12)} task=${w.taskId ?? '(claiming)'}  ${elapsed}`,
-          );
+        console.log('  Stats:');
+        console.log(`    Ticks run:       ${state.stats.tickCount}`);
+        console.log(`    Workers spawned: ${state.stats.workersSpawned}`);
+        console.log(`    Tasks reaped:    ${state.stats.tasksReaped}`);
+
+        if (state.activeWorkers.length > 0) {
+          console.log();
+          console.log('  Active workers (last seen):');
+          for (const w of state.activeWorkers) {
+            const workerAlive = isAlive(w.pid);
+            const icon = workerAlive ? '↑' : '↓';
+            const elapsed = w.startedAt
+              ? formatElapsed(Date.now() - new Date(w.startedAt).getTime())
+              : '';
+            console.log(
+              `    ${icon} PID ${String(w.pid).padEnd(7)} role=${w.role.padEnd(12)} task=${w.taskId ?? '(claiming)'}  ${elapsed}`,
+            );
+          }
         }
-      }
 
-      if (state.lastNoWorkAt) {
-        console.log();
-        console.log(`  \x1b[33m⚠ Last "no work" at ${new Date(state.lastNoWorkAt).toLocaleString()} — human input may be needed\x1b[0m`);
+        if (state.lastNoWorkAt) {
+          console.log();
+          console.log(`  \x1b[33m⚠ Last "no work" at ${new Date(state.lastNoWorkAt).toLocaleString()} — human input may be needed\x1b[0m`);
+        }
+      } else if (!alive) {
+        console.log('  No state file found.');
       }
-    } else if (!alive) {
-      console.log('  No state file found.');
+    };
+
+    if (!opts.watch) {
+      await printStatus();
+      return;
+    }
+
+    // Watch mode: clear terminal, print status, sleep, repeat until Ctrl-C
+    const intervalMs = parseFloat(opts.interval) * 1000;
+
+    process.on('SIGINT', () => {
+      process.exit(0);
+    });
+
+    while (true) {
+      process.stdout.write('\x1b[2J\x1b[H');
+      await printStatus();
+      await sleep(intervalMs);
     }
   });
 
