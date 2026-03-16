@@ -1,3 +1,4 @@
+import { watch } from 'node:fs';
 import type { ConductorConfig } from './config.js';
 import {
   initialState,
@@ -11,7 +12,7 @@ import {
 } from './state.js';
 import { queryCounts, closePool, type TaskCounts } from './db.js';
 import { reapStale, spawnWorker, type SpawnedWorker } from './spawn.js';
-import { readNewSignals } from './signals.js';
+import { readNewSignals, signalFilePath, type SpawnRequestSignal } from './signals.js';
 import { processSignals, fireAlert } from './alerts.js';
 
 // ---------------------------------------------------------------------------
@@ -102,7 +103,7 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
   // -------------------------------------------------------------------------
 
   while (!stopping) {
-    await sleep(cfg.pollIntervalMs);
+    await interruptibleSleep(cfg.pollIntervalMs, signalFilePath(cfg.workDir));
     if (stopping) break;
 
     state.stats.tickCount++;
@@ -134,18 +135,31 @@ async function tick(
 ): Promise<void> {
   // ------------------------------------------------------------------
   // 0. Drain the worker signal file — process rate-limit / crash events
-  //    emitted by workers since the last tick.
+  //    emitted by workers since the last tick, and handle any pending
+  //    spawn_request signals.
   // ------------------------------------------------------------------
+  const pendingSpawnRequests: SpawnRequestSignal[] = [];
   try {
     const { signals, newOffset } = await readNewSignals(cfg.workDir, state.signalFileOffset);
     state.signalFileOffset = newOffset;
     if (signals.length > 0) {
       log('info', `Processing ${signals.length} worker signal(s)`);
-      const rateLimited = await processSignals(cfg, state, log, signals);
-      if (rateLimited) {
-        log('warn', 'Rate limit signal received — shutting down');
-        await shutdown('rate_limited');
-        return;
+      // Separate spawn_request signals from operational signals so we can
+      // handle them after the normal flow (bypassing maxWorkers cap).
+      const operationalSignals = signals.filter((s) => {
+        if (s.type === 'spawn_request') {
+          pendingSpawnRequests.push(s as SpawnRequestSignal);
+          return false;
+        }
+        return true;
+      });
+      if (operationalSignals.length > 0) {
+        const rateLimited = await processSignals(cfg, state, log, operationalSignals);
+        if (rateLimited) {
+          log('warn', 'Rate limit signal received — shutting down');
+          await shutdown('rate_limited');
+          return;
+        }
       }
     }
   } catch (err) {
@@ -183,63 +197,99 @@ async function tick(
 
   log('debug', 'Task counts', counts);
 
-  if (counts.inProgress >= cfg.maxWorkers) {
+  const atCapacity = counts.inProgress >= cfg.maxWorkers;
+
+  if (atCapacity) {
     setPhase('waiting');
     log('info', `At capacity: ${counts.inProgress}/${cfg.maxWorkers} workers in progress`);
-    return;
   }
 
-  const slots = cfg.maxWorkers - counts.inProgress;
-
   // ------------------------------------------------------------------
-  // 3. Fill available worker slots
+  // 3. Fill available worker slots (skip when at capacity or rate limited)
   // ------------------------------------------------------------------
 
-  // Respect rate-limit hold-off from worker signals.
-  if (state.rateLimitedUntil) {
-    const holdUntil = new Date(state.rateLimitedUntil).getTime();
-    if (Date.now() < holdUntil) {
-      const resumeAt = new Date(state.rateLimitedUntil).toLocaleTimeString();
-      log('info', `Spawning suppressed — rate limited until ${resumeAt}`);
-      setPhase('waiting');
-      return;
-    }
-    // Hold-off has expired — clear it.
-    state.rateLimitedUntil = null;
-  }
-
-  setPhase('spawning');
-  let spawnedThisTick = 0;
-
-  for (let i = 0; i < slots; i++) {
-    const action = decideNextAction(counts, spawnedThisTick);
-
-    if (!action) {
-      state.lastNoWorkAt = new Date().toISOString();
-      log('warn', 'No eligible tasks available — waiting for human input', counts);
-      await fireAlert(cfg, state, log, 'task_exhaustion',
-        'Task queue is empty — no draft or eligible tasks remain',
-        counts as unknown as Record<string, unknown>,
-      );
-      break;
-    }
-
-    try {
-      const spawned = await doSpawn(cfg, state, log, action, counts);
-      if (spawned) {
-        state.stats.workersSpawned++;
-        spawnedThisTick++;
-        // Optimistically increment so next slot decision is accurate
-        counts.inProgress++;
-        if (action === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
-        if (action === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+  if (!atCapacity) {
+    // Respect rate-limit hold-off from worker signals.
+    let rateLimitActive = false;
+    if (state.rateLimitedUntil) {
+      const holdUntil = new Date(state.rateLimitedUntil).getTime();
+      if (Date.now() < holdUntil) {
+        const resumeAt = new Date(state.rateLimitedUntil).toLocaleTimeString();
+        log('info', `Spawning suppressed — rate limited until ${resumeAt}`);
+        setPhase('waiting');
+        rateLimitActive = true;
+      } else {
+        // Hold-off has expired — clear it.
+        state.rateLimitedUntil = null;
       }
-    } catch (err) {
-      log('error', `Failed to spawn ${action} worker`, { error: String(err) });
+    }
+
+    if (!rateLimitActive) {
+      const slots = cfg.maxWorkers - counts.inProgress;
+      setPhase('spawning');
+      let spawnedThisTick = 0;
+
+      for (let i = 0; i < slots; i++) {
+        const action = decideNextAction(counts, spawnedThisTick);
+
+        if (!action) {
+          state.lastNoWorkAt = new Date().toISOString();
+          log('warn', 'No eligible tasks available — waiting for human input', counts);
+          await fireAlert(cfg, state, log, 'task_exhaustion',
+            'Task queue is empty — no draft or eligible tasks remain',
+            counts as unknown as Record<string, unknown>,
+          );
+          break;
+        }
+
+        try {
+          const spawned = await doSpawn(cfg, state, log, action, counts);
+          if (spawned) {
+            state.stats.workersSpawned++;
+            spawnedThisTick++;
+            // Optimistically increment so next slot decision is accurate
+            counts.inProgress++;
+            if (action === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
+            if (action === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+          }
+        } catch (err) {
+          log('error', `Failed to spawn ${action} worker`, { error: String(err) });
+        }
+      }
     }
   }
 
   setPhase('idle');
+
+  // ------------------------------------------------------------------
+  // 4. Handle operator-initiated spawn requests — bypass maxWorkers cap
+  // ------------------------------------------------------------------
+  for (const req of pendingSpawnRequests) {
+    const role = req.role ?? autoDetectRole(counts);
+    if (!role) {
+      log('warn', 'spawn_request: no eligible tasks to spawn for', {
+        requested_by: req.requested_by,
+        task_id: req.task_id,
+      });
+      continue;
+    }
+    log('info', 'spawn_request: spawning worker (operator override — bypassing maxWorkers cap)', {
+      role,
+      requested_by: req.requested_by,
+      task_id: req.task_id ?? null,
+    });
+    try {
+      const spawned = await doSpawn(cfg, state, log, role as 'implementer' | 'refiner', counts);
+      if (spawned) {
+        state.stats.workersSpawned++;
+        counts.inProgress++;
+        if (role === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
+        if (role === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+      }
+    } catch (err) {
+      log('error', `spawn_request: failed to spawn ${role} worker`, { error: String(err) });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,12 +361,49 @@ async function doSpawn(
   return spawned;
 }
 
+/**
+ * Auto-detect the role for a spawn_request that didn't specify one.
+ * Uses the same priority logic as decideNextAction but ignores the
+ * spawnedThisTick limit (since this is an explicit operator request).
+ */
+function autoDetectRole(counts: TaskCounts): 'implementer' | 'refiner' | null {
+  const implementableEligible = Math.max(0, counts.eligible - counts.eligibleBlockedByChildren);
+  if (implementableEligible > 0 && counts.draft > 0) {
+    return counts.maxDraftPriority >= counts.maxEligiblePriority ? 'refiner' : 'implementer';
+  }
+  if (implementableEligible > 0) return 'implementer';
+  if (counts.draft > 0) return 'refiner';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Sleep for `ms` milliseconds, but wake up early if the signals file changes.
+ * Uses fs.watch for zero-cost idle waiting.
+ */
+function interruptibleSleep(ms: number, signalFilePath: string): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      watcher?.close();
+      resolve();
+    };
+
+    const timer = setTimeout(finish, ms);
+
+    let watcher: ReturnType<typeof watch> | undefined;
+    try {
+      watcher = watch(signalFilePath, finish);
+    } catch {
+      // Signals file doesn't exist yet — fall back to plain timer.
+    }
+  });
 }
 
 function isStillRunning(pid: number): boolean {
