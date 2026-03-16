@@ -166,7 +166,7 @@ program
   .description('Claim the next eligible task (use --draft to claim draft tasks for refinement)')
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
-  .option('--role <role>', 'Only claim tasks assigned to this role (or unassigned tasks)')
+  .option('--role <role>', 'Only claim tasks with this exact assigned_role (no fallback to unassigned tasks). Omit to claim only unassigned (NULL) tasks.')
   .action(async (opts: { agent: string; draft?: boolean; role?: string }) => {
     await run(() => claim(opts.agent, opts.draft ?? false, opts.role));
   });
