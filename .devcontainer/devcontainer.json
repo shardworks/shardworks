@@ -4,8 +4,7 @@
     "VSCODE_AGENT_FOLDER": "/vscode"
   },
   "remoteEnv": {
-    "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock",
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+    "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock"
   },
   "customizations": {
     "vscode": {
