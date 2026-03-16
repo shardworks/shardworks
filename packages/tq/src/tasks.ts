@@ -93,13 +93,21 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
  * caller's transaction and prevent concurrent claims of the same child.
  */
 async function findEligibleLeaf(conn: PoolConnection, taskRow: TaskRow): Promise<TaskRow> {
+  // Only redirect to children that share the same assigned_role (NULL-safe).
+  // Without this, a planner claiming a planner-assigned parent would get
+  // silently redirected to NULL-assigned implementer children.
+  const roleCondition = taskRow.assigned_role === null
+    ? 'assigned_role IS NULL'
+    : 'assigned_role = ?';
+  const roleParam = taskRow.assigned_role === null ? [] : [taskRow.assigned_role];
+
   const [childRows] = await conn.execute<TaskRow[]>(
     `SELECT * FROM tasks
-     WHERE parent_id = ? AND status = 'eligible'
+     WHERE parent_id = ? AND status = 'eligible' AND ${roleCondition}
      ORDER BY priority DESC, eligible_at ASC
      LIMIT 1
      FOR UPDATE`,
-    [taskRow.id],
+    [taskRow.id, ...roleParam],
   );
   if (childRows.length === 0) return taskRow;
   return findEligibleLeaf(conn, childRows[0]!);
