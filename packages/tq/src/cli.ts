@@ -13,6 +13,11 @@ import {
   complete,
   fail,
   publish,
+  link,
+  unlink,
+  reparent,
+  edit,
+  cancel,
   subtree,
   ready,
   getDepResults,
@@ -156,6 +161,67 @@ program
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .action(async (id: string, opts: { agent: string }) => {
     await run(() => publish(id, opts.agent));
+  });
+
+// ── tq link ───────────────────────────────────────────────────────────────
+
+program
+  .command('link <task-id> <dep-id>')
+  .description('Add a dependency edge: task-id depends on dep-id')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (taskId: string, depId: string, opts: { agent: string }) => {
+    await run(() => link(taskId, depId, opts.agent));
+  });
+
+// ── tq unlink ─────────────────────────────────────────────────────────────
+
+program
+  .command('unlink <task-id> <dep-id>')
+  .description('Remove a dependency edge')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (taskId: string, depId: string, opts: { agent: string }) => {
+    await run(() => unlink(taskId, depId, opts.agent));
+  });
+
+// ── tq reparent ───────────────────────────────────────────────────────────
+
+program
+  .command('reparent <task-id> <new-parent-id>')
+  .description('Move a task under a new parent (use "root" to make it a root task)')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (taskId: string, newParentId: string, opts: { agent: string }) => {
+    const parentId = newParentId === 'root' ? null : newParentId;
+    await run(() => reparent(taskId, parentId, opts.agent));
+  });
+
+// ── tq edit ───────────────────────────────────────────────────────────────
+
+program
+  .command('edit <task-id>')
+  .description('Edit a task\'s description, payload, or priority (draft/pending/eligible only)')
+  .option('--description <text>', 'New description')
+  .option('-p, --payload <json>', 'New payload (JSON)')
+  .option('--priority <n>', 'New priority', (v) => parseInt(v, 10))
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (taskId: string, opts: {
+    description?: string; payload?: string; priority?: number; agent: string;
+  }) => {
+    await run(() => edit(taskId, opts.agent, {
+      description: opts.description,
+      payload: opts.payload ? JSON.parse(opts.payload) : undefined,
+      priority: opts.priority,
+    }));
+  });
+
+// ── tq cancel ─────────────────────────────────────────────────────────────
+
+program
+  .command('cancel <task-id>')
+  .description('Cancel a task without claiming it (for deduplication / cleanup)')
+  .requiredOption('--reason <text>', 'Cancellation reason')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (taskId: string, opts: { reason: string; agent: string }) => {
+    await run(() => cancel(taskId, opts.agent, opts.reason));
   });
 
 // ── tq list ─────────────────────────────────────────────────────────────────

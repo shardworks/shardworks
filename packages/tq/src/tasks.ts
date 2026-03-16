@@ -254,6 +254,15 @@ async function reachableFrom(conn: PoolConnection, startIds: string[]): Promise<
   return visited;
 }
 
+/** Look up a task's parent_id. Returns null if the task has no parent or doesn't exist. */
+async function getParentId(conn: PoolConnection, taskId: string): Promise<string | null> {
+  const [rows] = await conn.execute<RowDataPacket[]>(
+    'SELECT parent_id FROM tasks WHERE id = ?',
+    [taskId],
+  );
+  return rows.length > 0 ? (rows[0]!.parent_id as string | null) : null;
+}
+
 export async function getDepResults(taskId: string): Promise<DepResults> {
   const conn = await pool.getConnection();
   try {
@@ -586,6 +595,258 @@ export async function publish(taskId: string, agentId: string): Promise<Task> {
     const depsMap = await attachDeps(conn, [taskId]);
     return rowToTask(
       { ...row, status: newStatus, eligible_at: eligibleAt, claimed_by: null, claimed_at: null },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Planner operations — atomic cross-task mutations
+// ---------------------------------------------------------------------------
+
+/**
+ * Add a dependency edge: `taskId` depends on `depId`.
+ * Validates both tasks exist, the edge doesn't already exist, and no cycle
+ * would be created. Only allowed on tasks that are draft, pending, or eligible
+ * (not in_progress/completed/failed — those are locked to their current DAG).
+ */
+export async function link(taskId: string, depId: string, actor: string): Promise<Task> {
+  return withCommit(`[link] ${taskId} → ${depId} by ${actor}`, async conn => {
+    // Lock both tasks
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id IN (?, ?) FOR UPDATE`,
+      [taskId, depId],
+    );
+    const taskRow = rows.find(r => r.id === taskId);
+    const depRow = rows.find(r => r.id === depId);
+    if (!taskRow) throw new Error(`Task not found: ${taskId}`);
+    if (!depRow) throw new Error(`Task not found: ${depId}`);
+
+    const mutableStatuses = new Set(['draft', 'pending', 'eligible']);
+    if (!mutableStatuses.has(taskRow.status)) {
+      throw new Error(`Cannot add dependency to ${taskId}: status is ${taskRow.status} (must be draft, pending, or eligible)`);
+    }
+
+    // Check for existing edge
+    const [existing] = await conn.execute<RowDataPacket[]>(
+      'SELECT 1 FROM task_dependencies WHERE task_id = ? AND dep_id = ?',
+      [taskId, depId],
+    );
+    if (existing.length > 0) throw new Error(`Dependency ${taskId} → ${depId} already exists`);
+
+    // Cycle detection: can depId reach taskId transitively? If so, adding this edge creates a cycle.
+    const reachable = await reachableFrom(conn, [depId]);
+    if (reachable.has(taskId)) {
+      throw new Error(`Adding dependency ${taskId} → ${depId} would create a cycle`);
+    }
+
+    await conn.execute(
+      'INSERT INTO task_dependencies (task_id, dep_id) VALUES (?, ?)',
+      [taskId, depId],
+    );
+
+    // If the task was eligible but now has an incomplete dependency, demote to pending
+    if (taskRow.status === 'eligible' && depRow.status !== 'completed') {
+      await conn.execute(
+        `UPDATE tasks SET status = 'pending', eligible_at = NULL WHERE id = ?`,
+        [taskId],
+      );
+      taskRow.status = 'pending';
+      taskRow.eligible_at = null;
+    }
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(taskRow, depsMap.get(taskId) ?? []);
+  });
+}
+
+/**
+ * Remove a dependency edge. If the task was pending and all remaining deps
+ * are now completed, promotes it to eligible.
+ */
+export async function unlink(taskId: string, depId: string, actor: string): Promise<Task> {
+  return withCommit(`[unlink] ${taskId} → ${depId} by ${actor}`, async conn => {
+    const [taskRows] = await conn.execute<TaskRow[]>(
+      'SELECT * FROM tasks WHERE id = ? FOR UPDATE',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = taskRows[0]!;
+
+    const mutableStatuses = new Set(['draft', 'pending', 'eligible']);
+    if (!mutableStatuses.has(row.status)) {
+      throw new Error(`Cannot remove dependency from ${taskId}: status is ${row.status}`);
+    }
+
+    const [existing] = await conn.execute<RowDataPacket[]>(
+      'SELECT 1 FROM task_dependencies WHERE task_id = ? AND dep_id = ?',
+      [taskId, depId],
+    );
+    if (existing.length === 0) throw new Error(`No dependency ${taskId} → ${depId} exists`);
+
+    await conn.execute(
+      'DELETE FROM task_dependencies WHERE task_id = ? AND dep_id = ?',
+      [taskId, depId],
+    );
+
+    // Check if the task should be promoted (pending → eligible)
+    if (row.status === 'pending') {
+      const [depRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT t.status
+         FROM task_dependencies td
+         JOIN tasks t ON t.id = td.dep_id
+         WHERE td.task_id = ?`,
+        [taskId],
+      );
+      const allDone = depRows.length === 0 || depRows.every(r => r.status === 'completed');
+      if (allDone) {
+        const now = new Date();
+        await conn.execute(
+          `UPDATE tasks SET status = 'eligible', eligible_at = ? WHERE id = ?`,
+          [now, taskId],
+        );
+        row.status = 'eligible';
+        row.eligible_at = now;
+      }
+    }
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(row, depsMap.get(taskId) ?? []);
+  });
+}
+
+/**
+ * Move a task under a new parent. Pass newParentId = null to make it a root task.
+ * Prevents circular parent chains.
+ */
+export async function reparent(taskId: string, newParentId: string | null, actor: string): Promise<Task> {
+  const label = newParentId ? `${taskId} → parent ${newParentId}` : `${taskId} → root`;
+  return withCommit(`[reparent] ${label} by ${actor}`, async conn => {
+    const [taskRows] = await conn.execute<TaskRow[]>(
+      'SELECT * FROM tasks WHERE id = ? FOR UPDATE',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = taskRows[0]!;
+
+    if (newParentId !== null) {
+      // Verify parent exists
+      const [parentRows] = await conn.execute<TaskRow[]>(
+        'SELECT id FROM tasks WHERE id = ?',
+        [newParentId],
+      );
+      if (parentRows.length === 0) throw new Error(`Parent task not found: ${newParentId}`);
+
+      // Prevent circular parent chains: walk from newParentId up; if we reach taskId, it's circular
+      const visited = new Set<string>();
+      let cursor: string | null = newParentId;
+      while (cursor !== null) {
+        if (cursor === taskId) {
+          throw new Error(`Reparenting ${taskId} under ${newParentId} would create a circular parent chain`);
+        }
+        if (visited.has(cursor)) break; // safety: shouldn't happen but avoids infinite loop
+        visited.add(cursor);
+        cursor = await getParentId(conn, cursor);
+      }
+    }
+
+    await conn.execute(
+      'UPDATE tasks SET parent_id = ? WHERE id = ?',
+      [newParentId, taskId],
+    );
+    row.parent_id = newParentId;
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(row, depsMap.get(taskId) ?? []);
+  });
+}
+
+/**
+ * Edit mutable fields (description, payload, priority) on a task that hasn't
+ * been claimed yet. At least one field must be provided.
+ */
+export async function edit(
+  taskId: string,
+  actor: string,
+  updates: { description?: string; payload?: unknown; priority?: number },
+): Promise<Task> {
+  if (updates.description === undefined && updates.payload === undefined && updates.priority === undefined) {
+    throw new Error('At least one of description, payload, or priority must be provided');
+  }
+
+  return withCommit(`[edit] ${taskId} by ${actor}`, async conn => {
+    const [taskRows] = await conn.execute<TaskRow[]>(
+      'SELECT * FROM tasks WHERE id = ? FOR UPDATE',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = taskRows[0]!;
+
+    const mutableStatuses = new Set(['draft', 'pending', 'eligible']);
+    if (!mutableStatuses.has(row.status)) {
+      throw new Error(`Cannot edit ${taskId}: status is ${row.status} (must be draft, pending, or eligible)`);
+    }
+
+    const sets: string[] = [];
+    const params: (string | number)[] = [];
+    if (updates.description !== undefined) {
+      sets.push('description = ?');
+      params.push(updates.description);
+      row.description = updates.description;
+    }
+    if (updates.payload !== undefined) {
+      sets.push('payload = ?');
+      params.push(JSON.stringify(updates.payload));
+      row.payload = updates.payload;
+    }
+    if (updates.priority !== undefined) {
+      sets.push('priority = ?');
+      params.push(updates.priority);
+      row.priority = updates.priority;
+    }
+    params.push(taskId);
+
+    await conn.execute(
+      `UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`,
+      params,
+    );
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(row, depsMap.get(taskId) ?? []);
+  });
+}
+
+/**
+ * Cancel a task without claiming it first. Used by planners to eliminate
+ * duplicates or remove tasks that are no longer needed. Only works on tasks
+ * that are not in_progress (to avoid stomping on active workers).
+ */
+export async function cancel(taskId: string, actor: string, reason: string): Promise<Task> {
+  return withCommit(`[cancel] ${taskId} by ${actor}`, async conn => {
+    const [taskRows] = await conn.execute<TaskRow[]>(
+      'SELECT * FROM tasks WHERE id = ? FOR UPDATE',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = taskRows[0]!;
+
+    if (row.status === 'in_progress') {
+      throw new Error(`Cannot cancel ${taskId}: it is in_progress (claimed by ${row.claimed_by})`);
+    }
+    if (row.status === 'completed' || row.status === 'failed') {
+      throw new Error(`Cannot cancel ${taskId}: it is already ${row.status}`);
+    }
+
+    const now = new Date();
+    const resultPayload = { cancelled: true, reason };
+    await conn.execute(
+      `UPDATE tasks SET status = 'failed', result_payload = ?, completed_at = ? WHERE id = ?`,
+      [JSON.stringify(resultPayload), now, taskId],
+    );
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      { ...row, status: 'failed', result_payload: resultPayload, completed_at: now },
       depsMap.get(taskId) ?? [],
     );
   });

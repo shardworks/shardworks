@@ -93,6 +93,28 @@ New tasks start as `draft` unless `--ready` is passed.
 `tq claim` transitions `eligible` → `in_progress` (for regular workers).
 When all dependencies of a `pending` task complete, it becomes `eligible`.
 
+### Planner commands (cross-task refinement)
+
+These commands operate atomically on `main` and are safe while other agents work.
+They only affect tasks in mutable states (draft, pending, eligible).
+
+```bash
+# Add a dependency edge: task depends on dep (with cycle detection)
+tq link <task-id> <dep-id> [--agent <id>]
+
+# Remove a dependency edge (may promote pending → eligible)
+tq unlink <task-id> <dep-id> [--agent <id>]
+
+# Move a task under a new parent (use "root" to unparent)
+tq reparent <task-id> <new-parent-id|root> [--agent <id>]
+
+# Edit task metadata (at least one field required)
+tq edit <task-id> [--description <text>] [-p <json>] [--priority <n>] [--agent <id>]
+
+# Cancel a task without claiming (for duplicates / obsolete tasks)
+tq cancel <task-id> --reason '<text>' [--agent <id>]
+```
+
 ### Skills
 
 Use these slash commands for common task-queue workflows:
@@ -109,12 +131,12 @@ requires only a JSON edit — no code change.
 Each role specifies:
 - `id` — role name, passed as `--role` to the worker
 - `description` — human-readable summary (for conductors selecting a role)
-- `claimDraft` — `true` to claim from the `draft` pool, `false` for `eligible`
+- `claimDraft` — `true` for draft pool, `false` for eligible pool, `null` for no claim (planner)
 - `systemPrompt` / `workPrompt` — arrays of lines, joined with `\n`
 
 **Template variables** available in prompts:
 - `{{agentId}}` — the agent's ID
-- `{{taskId}}` — the task being worked on
+- `{{taskId}}` — the task being worked on (or `__backlog__` for planners)
 - `{{tagsLine}}` — `\nCapability tags: foo, bar` or empty string
 
 **Built-in roles:**
@@ -122,14 +144,16 @@ Each role specifies:
 | Role | Claims | Action |
 |------|--------|--------|
 | `implementer` | `eligible` tasks | Does the work → `tq complete` / `tq fail` |
-| `refiner` | `draft` tasks | Refines tickets → `tq publish` |
+| `refiner` | `draft` tasks | Refines one ticket → `tq publish` |
+| `planner` | nothing | Cross-task refinement: dedup, link, reparent, edit, cancel |
 
 **Launching a worker with a role:**
 
 ```bash
-worker --role refiner          # one-shot refiner
 worker --role implementer      # one-shot implementer (default)
-WORKER_ROLE=refiner worker     # via env var
+worker --role refiner          # one-shot refiner
+worker --role planner          # one-shot planner (reviews whole backlog)
+WORKER_ROLE=planner worker     # via env var
 ```
 
 Override the roles file location with `ROLES_CONFIG=/path/to/roles.json`.

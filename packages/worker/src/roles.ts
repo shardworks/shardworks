@@ -8,8 +8,13 @@ import { join } from 'node:path';
 export interface RoleDefinition {
   id: string;
   description: string;
-  /** When true, worker claims from the 'draft' pool; otherwise 'eligible'. */
-  claimDraft: boolean;
+  /**
+   * Claim pool selection:
+   *   true  — claim from the 'draft' pool (refiner roles)
+   *   false — claim from the 'eligible' pool (implementer roles)
+   *   null  — don't claim any task; work on the whole backlog (planner roles)
+   */
+  claimDraft: boolean | null;
   /**
    * System prompt lines. Supports template variables:
    *   {{agentId}}  — the agent's ID

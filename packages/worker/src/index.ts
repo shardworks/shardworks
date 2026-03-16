@@ -15,6 +15,10 @@ async function main(): Promise<void> {
 
   if (config.mode === 'conducted') {
     conducted = config;
+  } else if (role.claimDraft === null) {
+    // Planner mode: no task to claim — work on the whole backlog.
+    // Use a synthetic task ID so the launch pipeline has something to reference.
+    conducted = { ...config, mode: 'conducted', taskId: '__backlog__' };
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
     const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft);
