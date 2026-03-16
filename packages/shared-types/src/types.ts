@@ -16,6 +16,7 @@ export interface Task {
   parent_id: string | null;
   priority: number;
   result_payload: unknown | null;
+  result_summary: unknown | null;
   created_by: string;
   claimed_by: string | null;
   /** Optional role that must match the claiming worker's role. Null means any role. */

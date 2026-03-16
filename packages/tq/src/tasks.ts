@@ -26,6 +26,7 @@ interface TaskRow extends RowDataPacket {
   parent_id: string | null;
   priority: number;
   result_payload: unknown;
+  result_summary: unknown;
   created_by: string;
   claimed_by: string | null;
   assigned_role: string | null;
@@ -68,6 +69,7 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
     parent_id: row.parent_id ?? null,
     priority: row.priority,
     result_payload: parseJson(row.result_payload),
+    result_summary: parseJson(row.result_summary),
     created_by: row.created_by,
     claimed_by: row.claimed_by ?? null,
     assigned_role: row.assigned_role ?? null,
@@ -210,6 +212,7 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
         parent_id: input.parent_id ?? null,
         priority: input.priority ?? 0,
         result_payload: null,
+        result_summary: null,
         created_by: input.created_by,
         claimed_by: null,
         assigned_role: input.assigned_role ?? null,
