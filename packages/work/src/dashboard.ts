@@ -200,7 +200,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     style: { bg: 'blue', fg: 'white' },
     tags: true,
-    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle completed subtrees',
+    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} hide completed',
   });
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -213,6 +213,7 @@ export async function dashboard(): Promise<void> {
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
   let hideCompletedSubtrees = true;
+  const collapsedIds = new Set<string>();
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -309,6 +310,12 @@ export async function dashboard(): Promise<void> {
 
       const lines: string[] = [];
 
+      /** Count all descendants (not including the node itself). */
+      function countDescendants(nodeId: string): number {
+        const kids = children.get(nodeId) ?? [];
+        return kids.reduce((sum, k) => sum + 1 + countDescendants(k.id), 0);
+      }
+
       /**
        * Render a task tree node.
        * @param node          – the task row
@@ -335,8 +342,21 @@ export async function dashboard(): Promise<void> {
           // Final connector for this node
           prefix += isLast ? '└─ ' : '├─ ';
         }
-        // prefix visual width: indent * 3 columns (each section = 3 cols)
-        const prefixLen = indent * 3;
+
+        // ── Children & collapse state ─────────────────────────────────────
+        const kids = (children.get(node.id) ?? []).sort((a, b) => b.priority - a.priority);
+        const hasKids = kids.length > 0;
+        const isCollapsed = collapsedIds.has(node.id);
+
+        // Collapse indicator: ▸ (collapsed) / ▾ (expanded) for nodes with
+        // children; two spaces for leaf nodes to maintain column alignment.
+        // This adds 2 visual columns to every line.
+        const collapseIndicator = hasKids
+          ? (isCollapsed ? '▸ ' : '▾ ')
+          : '  ';
+
+        // prefix visual width: indent * 3 columns + 2 for collapse indicator
+        const prefixLen = indent * 3 + 2;
 
         const statusIcon = statusSymbol(node.status, node.assigned_role);
 
@@ -357,6 +377,11 @@ export async function dashboard(): Promise<void> {
           desc = node.description.padEnd(maxDesc);
         }
 
+        // Append collapsed child count suffix when subtree is hidden
+        const countSuffix = (hasKids && isCollapsed)
+          ? ` {grey-fg}(${countDescendants(node.id)} children){/grey-fg}`
+          : '';
+
         // ── Full-line color ───────────────────────────────────────────────
         // Wrap the entire line in the status color. The icon's own inner color
         // tags take precedence over this outer wrapper.
@@ -364,19 +389,20 @@ export async function dashboard(): Promise<void> {
         const colorOpen = `{${lineColor}-fg}`;
         const colorClose = `{/${lineColor}-fg}`;
 
-        lines.push(`${colorOpen}${prefix}${statusIcon} ${node.id} ${desc}${colorClose}`);
+        lines.push(`${colorOpen}${prefix}${collapseIndicator}${statusIcon} ${node.id} ${desc}${colorClose}${countSuffix}`);
 
-        // ── Recurse into children ─────────────────────────────────────────
-        const kids = (children.get(node.id) ?? []).sort((a, b) => b.priority - a.priority);
-        kids.forEach((kid, idx) => {
-          const kidIsLast = idx === kids.length - 1;
-          // Root nodes (indent=0) contribute no continuation bar — their
-          // children start a fresh connector chain.
-          const kidContinuations = indent === 0
-            ? []
-            : [...continuations, !isLast];
-          renderNode(kid, indent + 1, kidContinuations, kidIsLast);
-        });
+        // ── Recurse into children (skip when collapsed) ───────────────────
+        if (!isCollapsed) {
+          kids.forEach((kid, idx) => {
+            const kidIsLast = idx === kids.length - 1;
+            // Root nodes (indent=0) contribute no continuation bar — their
+            // children start a fresh connector chain.
+            const kidContinuations = indent === 0
+              ? []
+              : [...continuations, !isLast];
+            renderNode(kid, indent + 1, kidContinuations, kidIsLast);
+          });
+        }
       }
 
       // Render root tasks (no parent), sorted by priority DESC
@@ -851,10 +877,9 @@ export async function dashboard(): Promise<void> {
     }, 10);
   });
 
-  // Enter on Task Pipeline → open full-screen log overlay for the selected task
-  pipelineBox.key(['enter'], async () => {
+  /** Extract the task ID from the currently selected pipeline line. */
+  function selectedPipelineTaskId(): string | null {
     const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
-    // Extract the task ID from the selected line using a regex.
     const items = (pipelineBox as unknown as { items: Array<{ getText?: () => string; content?: string }> }).items;
     const rawItem = items[idx];
     const rawText: string = typeof rawItem?.getText === 'function'
@@ -863,11 +888,25 @@ export async function dashboard(): Promise<void> {
     // Strip blessed markup tags to get plain text, then extract task ID
     const plain = rawText.replace(/\{[^}]+\}/g, '');
     const match = plain.match(/tq-[a-f0-9]+(?:\.[a-f0-9]+)*/i);
-    if (!match) {
-      // Selected item has no task ID (e.g. legend line) — do nothing
-      return;
+    return match ? match[0] : null;
+  }
+
+  // Enter / Space on Task Pipeline → toggle collapse/expand of the node's subtree
+  pipelineBox.key(['enter', 'space'], async () => {
+    const taskId = selectedPipelineTaskId();
+    if (!taskId) return;
+    if (collapsedIds.has(taskId)) {
+      collapsedIds.delete(taskId);
+    } else {
+      collapsedIds.add(taskId);
     }
-    const taskId = match[0];
+    await refresh();
+  });
+
+  // 'o' on Task Pipeline → open full-screen log overlay for the selected task
+  pipelineBox.key(['o'], async () => {
+    const taskId = selectedPipelineTaskId();
+    if (!taskId) return;
 
     // Find the log file for this task (flat layout: data/work-logs/<task-id>.jsonl)
     const base = workLogsDir();
