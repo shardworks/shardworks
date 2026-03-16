@@ -171,7 +171,7 @@ tq batch <file>                                     # batch-enqueue graph from J
 **Notes:**
 - `--agent` on `complete` and `fail` is validated against `claimed_by` — must match the value used in `tq claim`
 - `-r` is short for `--result` on `tq complete`
-- `tq claim` has no `--tags` flag currently; tag filtering is not yet exposed in the CLI
+- `tq claim` accepts repeatable `--capability <tag>` flags; only tasks whose required tags are a subset of the declared capabilities will be claimed
 - `tq batch` accepts `-` for stdin: `echo '[...]' | tq batch -`
 
 ---
@@ -267,7 +267,7 @@ CLAUDE.md               # Gets a "Task Queue CLI" section
 | CLI arg | `--task-id` | yes | Task to work on |
 | CLI arg | `--agent-id` | yes | Conductor-generated UUID; injected into prompt and used as worktree name on first run |
 | CLI arg | `--resume-session` | no | Claude session UUID; absent on first run, required on restart |
-| env | `AGENT_TAGS` | no | Injected into system prompt |
+| env | `AGENT_TAGS` | no | Comma-separated capability tags; passed as `--capability <tag>` to `tq claim` to filter tasks by required tags. Logged on startup. |
 | env | `WORK_DIR` | no | Base working directory; defaults to repo root (claude subprocess CWD before worktree) |
 | env | `CLAUDE_MODEL` | no | `sonnet` |
 | env | `CLAUDE_MAX_BUDGET_USD` | no | Per-invocation cost cap |
@@ -374,6 +374,6 @@ Linear critical path: **T01 → W01 → W02 → W03 → W04**
 | Conductor / supervisor implementation | Separate components |
 | Worktree cleanup / merge strategy | Post-MVP; one branch per worker accumulates work |
 | Session rotation (context window management) | Post-MVP |
-| Tag-based claim filtering in CLI | Not yet exposed in `tq claim` |
+| Tag-based task *population* (tq enqueue/edit --tag) | Not yet implemented in tq CLI |
 | Max-restart / give-up logic | Supervisor's responsibility |
 | Docker compose entry | After end-to-end loop works |
