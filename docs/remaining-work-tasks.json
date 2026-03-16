@@ -1,0 +1,724 @@
+[
+  {
+    "id": "tq-528f",
+    "description": "Failure & Recovery — retry logic, heartbeat, and blocked status",
+    "payload": {
+      "group": 1,
+      "requirements": [
+        "FR-4",
+        "FR-10",
+        "FR-11",
+        "FR-12",
+        "FR-14"
+      ],
+      "summary": "Add max_attempts/attempt_count/timeout_seconds fields; retry-on-fail with backoff; heartbeat command and auto-release of stale in_progress tasks; blocked status cascade when a dependency fails terminally."
+    },
+    "status": "eligible",
+    "parent_id": null,
+    "priority": 10,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.736Z",
+    "eligible_at": "2026-03-16T06:30:09.736Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-528f.00d5",
+    "description": "Add max_attempts, attempt_count, and timeout_seconds columns to tasks schema",
+    "payload": {
+      "details": "ALTER TABLE tasks: add max_attempts INT NOT NULL DEFAULT 1, attempt_count INT NOT NULL DEFAULT 0, timeout_seconds INT NULL. Update shared-types Task interface. Update schema.ts initSchema() to be idempotent (ADD COLUMN IF NOT EXISTS or recreate)."
+    },
+    "status": "eligible",
+    "parent_id": "tq-528f",
+    "priority": 10,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.511Z",
+    "eligible_at": "2026-03-16T06:31:45.511Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-528f.c950",
+    "description": "Implement retry-on-fail: re-set to eligible with backoff when attempts remain",
+    "payload": {
+      "details": "In fail(): increment attempt_count. If attempt_count < max_attempts, set status back to eligible and set eligible_at = NOW() + backoff (e.g. 2^attempt_count * 30s). If exhausted, set status to failed. Update withCommit message to reflect retry vs terminal fail."
+    },
+    "status": "pending",
+    "parent_id": "tq-528f",
+    "priority": 9,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.512Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-528f.00d5"
+    ]
+  },
+  {
+    "id": "tq-9338",
+    "description": "Tags & Agent Capabilities — task tags and capability-based claim routing",
+    "payload": {
+      "group": 2,
+      "requirements": [
+        "FR-9",
+        "FR-18",
+        "FR-19"
+      ],
+      "summary": "Add tags to tasks; agents declare capability tags on claim; task only claimable by an agent whose capabilities are a superset of the task's required tags; tag filtering for list and ready."
+    },
+    "status": "eligible",
+    "parent_id": null,
+    "priority": 8,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.737Z",
+    "eligible_at": "2026-03-16T06:30:09.737Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-528f.54b0",
+    "description": "Add blocked status and cascade: mark transitive dependents blocked on terminal dependency failure",
+    "payload": {
+      "details": "Add blocked to TaskStatus union. After a task reaches failed terminally, recursively find all pending/eligible tasks that (transitively) depend on it and set them to blocked. Add promoteBlocked() helper similar to promoteEligible(). blocked tasks become eligible again only if the failed dependency is explicitly retried."
+    },
+    "status": "pending",
+    "parent_id": "tq-528f",
+    "priority": 8,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.513Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-528f.c950"
+    ]
+  },
+  {
+    "id": "tq-9338.545a",
+    "description": "Add task_tags table and update schema init",
+    "payload": {
+      "details": "CREATE TABLE IF NOT EXISTS task_tags (task_id VARCHAR(64) NOT NULL, tag VARCHAR(255) NOT NULL, PRIMARY KEY (task_id, tag), FOREIGN KEY (task_id) REFERENCES tasks(id)). Update initSchema(). Update getTask() and listTasks() to join and aggregate tags into a string[] on the Task object."
+    },
+    "status": "eligible",
+    "parent_id": "tq-9338",
+    "priority": 8,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.618Z",
+    "eligible_at": "2026-03-16T06:31:45.618Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-9a48",
+    "description": "Additional Lifecycle Operations — release, cancel, and retry commands",
+    "payload": {
+      "group": 3,
+      "requirements": [
+        "FR-11",
+        "FR-16"
+      ],
+      "summary": "tq release <id>: return in_progress task to eligible without failing. tq cancel <id>: terminate a task permanently. tq retry <id>: re-queue a failed or blocked task (depends on Group 1 retry schema)."
+    },
+    "status": "pending",
+    "parent_id": null,
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.738Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-528f"
+    ]
+  },
+  {
+    "id": "tq-528f.8b72",
+    "description": "Add tq heartbeat <id> command — refresh claimed_at on an in_progress task",
+    "payload": {
+      "details": "New heartbeat(taskId, agentId) function: validate task is in_progress and claimed_by === agentId, update claimed_at = NOW(). New CLI command: tq heartbeat <id> [--agent <id>]. Wrap in withCommit. Returns updated task."
+    },
+    "status": "pending",
+    "parent_id": "tq-528f",
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.514Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-528f.00d5"
+    ]
+  },
+  {
+    "id": "tq-9338.ac1b",
+    "description": "Add --tag option (repeatable) to tq enqueue and tq batch",
+    "payload": {
+      "details": "Add tags?: string[] to EnqueueInput and BatchTaskInput in shared-types. In enqueue(): after inserting the task row, insert rows into task_tags. In batchEnqueue(): same. CLI: tq enqueue ... --tag foo --tag bar (uses collect() accumulator). tq batch: tags field in JSON per-task."
+    },
+    "status": "pending",
+    "parent_id": "tq-9338",
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.619Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-9338.545a"
+    ]
+  },
+  {
+    "id": "tq-9338.2a5d",
+    "description": "Add --capability option to tq claim; filter eligible tasks by tag superset",
+    "payload": {
+      "details": "Modify claim(agentId, capabilities: string[]): the SELECT FOR UPDATE query must only return tasks whose required tags are a subset of the agent's capabilities. SQL: eligible tasks with no tags OR all tags present in the provided capability set. Use NOT EXISTS subquery on task_tags. CLI: tq claim --capability python --capability bash (repeatable, defaults to empty = claim any task)."
+    },
+    "status": "pending",
+    "parent_id": "tq-9338",
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.620Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-9338.545a"
+    ]
+  },
+  {
+    "id": "tq-9a48.31ea",
+    "description": "Implement tq release <id> — return an in_progress task to eligible without failing it",
+    "payload": {
+      "details": "New release(taskId, agentId) function: validate task is in_progress and claimed_by === agentId. Set status=eligible, claimed_by=NULL, claimed_at=NULL, eligible_at=NOW(). Wrap in withCommit. CLI: tq release <id> [--agent <id>]. Returns updated task."
+    },
+    "status": "eligible",
+    "parent_id": "tq-9a48",
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.726Z",
+    "eligible_at": "2026-03-16T06:31:45.726Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-9a48.06f5",
+    "description": "Implement tq cancel <id> — permanently cancel a task regardless of current status",
+    "payload": {
+      "details": "Add cancelled to TaskStatus union in shared-types. New cancel(taskId, actorId, reason?) function: set status=cancelled, completed_at=NOW(), result_payload={cancelled_by, reason}. Operator may cancel any non-terminal task. Wrap in withCommit. CLI: tq cancel <id> [--reason <text>] [--agent <id>]. Consider whether to cascade cancel to pending children (leave as open question, do not cascade for now)."
+    },
+    "status": "eligible",
+    "parent_id": "tq-9a48",
+    "priority": 7,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.727Z",
+    "eligible_at": "2026-03-16T06:31:45.727Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-7040",
+    "description": "Typed Relationships — non-scheduling annotated edges between tasks",
+    "payload": {
+      "group": 4,
+      "requirements": [
+        "FR-7",
+        "FR-21"
+      ],
+      "summary": "Add task_relationships table with relationship types: relates_to, duplicates, supersedes, replies_to, spawned_from. Add tq relate and tq relations commands. No scheduling effect."
+    },
+    "status": "eligible",
+    "parent_id": null,
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.739Z",
+    "eligible_at": "2026-03-16T06:30:09.739Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-3870",
+    "description": "Audit Query API — history, diff, and revert commands over Dolt history",
+    "payload": {
+      "group": 6,
+      "requirements": [
+        "FR-25",
+        "FR-26",
+        "FR-27",
+        "FR-28"
+      ],
+      "summary": "Expose Dolt native history via CLI: tq history <id>, tq diff <commit-a> <commit-b>, tq revert <commit> [--dry-run]. Add session-bracketing commits for isolatable agent work."
+    },
+    "status": "eligible",
+    "parent_id": null,
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.740Z",
+    "eligible_at": "2026-03-16T06:30:09.740Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-528f.b418",
+    "description": "Auto-release stale in_progress tasks where timeout_seconds has elapsed since claimed_at",
+    "payload": {
+      "details": "New releaseTimedOut() function: SELECT tasks WHERE status=in_progress AND timeout_seconds IS NOT NULL AND claimed_at + INTERVAL timeout_seconds SECOND < NOW(). For each: increment attempt_count, set status eligible (if attempts remain) or failed (if exhausted). Expose as tq release-timed-out command for operator use or cron invocation. Does not require a background daemon."
+    },
+    "status": "pending",
+    "parent_id": "tq-528f",
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.515Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-528f.8b72"
+    ]
+  },
+  {
+    "id": "tq-9338.602c",
+    "description": "Add --tag filter to tq list and tq ready",
+    "payload": {
+      "details": "Add tag?: string to ListFilters. In listTasks(): if tag is set, JOIN task_tags and filter. In ready(): add optional tag filter parameter. CLI: tq list --tag foo, tq ready --tag foo."
+    },
+    "status": "pending",
+    "parent_id": "tq-9338",
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.621Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-9338.545a"
+    ]
+  },
+  {
+    "id": "tq-9a48.30d5",
+    "description": "Implement tq retry <id> — re-queue a failed or blocked task, resetting attempt count",
+    "payload": {
+      "details": "New retryTask(taskId, actorId) function: validate task is failed or blocked. Reset attempt_count=0, status=eligible (if no pending deps) or pending (if deps exist), clear claimed_by/claimed_at/completed_at, set eligible_at=NOW() if eligible. Also un-block any tasks that were blocked solely because of this task. Wrap in withCommit. CLI: tq retry <id> [--agent <id>]. Returns updated task."
+    },
+    "status": "eligible",
+    "parent_id": "tq-9a48",
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.728Z",
+    "eligible_at": "2026-03-16T06:31:45.728Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-7040.250d",
+    "description": "Add task_relationships table to schema",
+    "payload": {
+      "details": "CREATE TABLE IF NOT EXISTS task_relationships (task_id VARCHAR(64) NOT NULL, type VARCHAR(64) NOT NULL, target_id VARCHAR(64) NOT NULL, created_by VARCHAR(255) NOT NULL, created_at DATETIME(3) NOT NULL, PRIMARY KEY (task_id, type, target_id)). Add RelationshipType = 'relates_to' | 'duplicates' | 'supersedes' | 'replies_to' | 'spawned_from' to shared-types. Update initSchema()."
+    },
+    "status": "eligible",
+    "parent_id": "tq-7040",
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.832Z",
+    "eligible_at": "2026-03-16T06:31:45.832Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-3870.dddf",
+    "description": "Add tq history <id> — show all Dolt commits that modified a given task",
+    "payload": {
+      "details": "New history(taskId) function: query dolt_diff_tasks system table (or dolt_log joined with dolt_diff_tasks) for all commits where the tasks row with id=taskId changed. Return array of {commit_hash, committer, message, from_status, to_status, committed_at}. CLI: tq history <id>. Read-only."
+    },
+    "status": "eligible",
+    "parent_id": "tq-3870",
+    "priority": 6,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.450Z",
+    "eligible_at": "2026-03-16T06:31:46.450Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-2ad3",
+    "description": "Result Compaction — result_summary field and compact operation",
+    "payload": {
+      "group": 5,
+      "requirements": [
+        "FR-35",
+        "FR-36",
+        "FR-37",
+        "FR-38",
+        "FR-39"
+      ],
+      "summary": "Add result_summary column; dep-results prefers result_summary over result_payload; tq compact <id> [--subtree] nulls out result_payload in live table (full payload survives in Dolt history); tq show --full-result."
+    },
+    "status": "pending",
+    "parent_id": null,
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.741Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-3870"
+    ]
+  },
+  {
+    "id": "tq-9338.fffa",
+    "description": "Add tq status-counts command — task counts grouped by status, optionally by tag",
+    "payload": {
+      "details": "New statusCounts(tag?: string): Promise<StatusRollup> function. SQL: SELECT status, COUNT(*) ... GROUP BY status, optionally filtered by JOIN on task_tags. CLI: tq status-counts [--tag foo]. Returns StatusRollup object."
+    },
+    "status": "pending",
+    "parent_id": "tq-9338",
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.622Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-9338.602c"
+    ]
+  },
+  {
+    "id": "tq-7040.6c8b",
+    "description": "Implement tq relate <id> --type <type> --target <id>",
+    "payload": {
+      "details": "New relate(taskId, type, targetId, createdBy) function: validate both tasks exist, validate type is a valid RelationshipType, insert into task_relationships. Wrap in withCommit '[relate] tq-XXXX <type> tq-YYYY by <actor>'. CLI: tq relate <id> --type <type> --target <id> [--created-by <id>]. Returns the inserted relationship row."
+    },
+    "status": "pending",
+    "parent_id": "tq-7040",
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.833Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-7040.250d"
+    ]
+  },
+  {
+    "id": "tq-7040.3f9e",
+    "description": "Implement tq relations <id> — list all relationships for a task",
+    "payload": {
+      "details": "New getRelations(taskId) function: SELECT all rows from task_relationships WHERE task_id=? OR target_id=? (both directions). Returns array of {task_id, type, target_id, created_by, created_at}. CLI: tq relations <id>. Read-only, no Dolt commit needed."
+    },
+    "status": "pending",
+    "parent_id": "tq-7040",
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.834Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-7040.6c8b"
+    ]
+  },
+  {
+    "id": "tq-2ad3.afbb",
+    "description": "Add result_summary column to tasks table",
+    "payload": {
+      "details": "ALTER TABLE tasks: add result_summary JSON NULL. Update shared-types Task interface to include result_summary: unknown | null. Update initSchema() idempotently. Update getTask() and listTasks() to include result_summary in SELECT."
+    },
+    "status": "eligible",
+    "parent_id": "tq-2ad3",
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.938Z",
+    "eligible_at": "2026-03-16T06:31:45.938Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-3870.5e7a",
+    "description": "Add tq diff <commit-a> <commit-b> — show task changes between two Dolt commits",
+    "payload": {
+      "details": "New diff(fromCommit, toCommit) function: query dolt_diff_tasks WHERE from_commit=? AND to_commit=? (or use DOLT_DIFF() table function). Return array of changed task rows with before/after status fields. CLI: tq diff <commit-a> <commit-b>. Read-only."
+    },
+    "status": "eligible",
+    "parent_id": "tq-3870",
+    "priority": 5,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.460Z",
+    "eligible_at": "2026-03-16T06:31:46.460Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-2ad3.660b",
+    "description": "Update dep-results to prefer result_summary over result_payload",
+    "payload": {
+      "details": "In getDepResults(): change SELECT to return COALESCE(result_summary, result_payload) as the value for each dependency. The full result_payload remains accessible via tq show. Update DepResults type comment to reflect this."
+    },
+    "status": "pending",
+    "parent_id": "tq-2ad3",
+    "priority": 4,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.939Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-2ad3.afbb"
+    ]
+  },
+  {
+    "id": "tq-2ad3.0e76",
+    "description": "Add --full-result flag to tq show to always return result_payload",
+    "payload": {
+      "details": "Modify getTask() to accept a fullResult boolean. When false (default): omit or null result_payload if result_summary is present. When true: always include result_payload. CLI: tq show <id> [--full-result]. Useful after compaction to retrieve the original output from live DB (before it's only in Dolt history)."
+    },
+    "status": "pending",
+    "parent_id": "tq-2ad3",
+    "priority": 4,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.940Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-2ad3.afbb"
+    ]
+  },
+  {
+    "id": "tq-3870.3de7",
+    "description": "Add tq revert <commit> [--dry-run] — restore database to a prior Dolt commit",
+    "payload": {
+      "details": "New revert(commitHash, dryRun?: boolean) function. If dryRun: call DOLT_DIFF() to show what would change without applying. If not dryRun: call CALL dolt_revert(commitHash) or CALL dolt_reset('--hard', commitHash) as appropriate. CLI: tq revert <commit> [--dry-run]. Destructive — should print a clear warning and require explicit confirmation flag in non-dry-run mode."
+    },
+    "status": "eligible",
+    "parent_id": "tq-3870",
+    "priority": 4,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.470Z",
+    "eligible_at": "2026-03-16T06:31:46.470Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-a2ea",
+    "description": "Branching — Dolt branch lifecycle and branch-scoped queue operations",
+    "payload": {
+      "group": 7,
+      "requirements": [
+        "FR-29",
+        "FR-30",
+        "FR-31",
+        "FR-32",
+        "FR-33",
+        "FR-34"
+      ],
+      "summary": "Full Dolt branch lifecycle: tq branch create/merge/delete/list. Branch-scoped claim, ready, list, show. Enables parallel workstreams, review gates, and safe agent sandboxing."
+    },
+    "status": "pending",
+    "parent_id": null,
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:30:09.742Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-2ad3",
+      "tq-3870",
+      "tq-528f",
+      "tq-7040",
+      "tq-9338",
+      "tq-9a48"
+    ]
+  },
+  {
+    "id": "tq-2ad3.182c",
+    "description": "Implement tq compact <id> [--subtree] — write result_summary, null out result_payload",
+    "payload": {
+      "details": "New compact(taskId, summary: unknown, subtree?: boolean) function. For each target task: validate status=completed, set result_summary=summary (caller-provided or auto-generated), set result_payload=NULL. Wrap in withCommit '[compact] tq-XXXX by <actor>'. With --subtree: recurse to all completed descendants. CLI: tq compact <id> --summary '<json>' [--subtree]. The original result_payload survives in Dolt history at the commit preceding compaction."
+    },
+    "status": "pending",
+    "parent_id": "tq-2ad3",
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:45.941Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-2ad3.0e76",
+      "tq-2ad3.660b"
+    ]
+  },
+  {
+    "id": "tq-a2ea.365b",
+    "description": "Add tq branch create <name> [--from <branch>] and tq branch list",
+    "payload": {
+      "details": "New branchCreate(name, from?: string) function: CALL dolt_branch(name) or CALL dolt_branch('-c', from, name). New branchList() function: SELECT * FROM dolt_branches. CLI: tq branch create <name> [--from <branch>] and tq branch list. Wrap mutations in withCommit."
+    },
+    "status": "eligible",
+    "parent_id": "tq-a2ea",
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.148Z",
+    "eligible_at": "2026-03-16T06:31:46.148Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-a2ea.f266",
+    "description": "Add tq branch merge <source> --into <target>",
+    "payload": {
+      "details": "New branchMerge(source, target) function: switch to target branch (CALL dolt_checkout(target)), then CALL dolt_merge(source). Handle merge conflicts — surface them in the return value as {conflicts: [...]} rather than throwing. CLI: tq branch merge <source> --into <target>. Returns merge result including conflict info if any."
+    },
+    "status": "pending",
+    "parent_id": "tq-a2ea",
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.149Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-a2ea.365b"
+    ]
+  },
+  {
+    "id": "tq-a2ea.5a06",
+    "description": "Add tq branch delete <name>",
+    "payload": {
+      "details": "New branchDelete(name) function: CALL dolt_branch('-d', name). Refuse to delete main. CLI: tq branch delete <name>. Returns deleted branch name."
+    },
+    "status": "pending",
+    "parent_id": "tq-a2ea",
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.150Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-a2ea.365b"
+    ]
+  },
+  {
+    "id": "tq-3870.93b6",
+    "description": "Add session-bracketing Dolt commits for isolatable agent work",
+    "payload": {
+      "details": "New sessionStart(agentId) and sessionEnd(agentId) functions: each writes a no-op Dolt commit with message '[session-start] agent <id>' or '[session-end] agent <id>'. Returns the commit hash. CLI: tq session-start [--agent <id>] and tq session-end [--agent <id>]. Allows operators to identify and revert all mutations within a single agent session using tq diff <start-hash> <end-hash> then tq revert."
+    },
+    "status": "eligible",
+    "parent_id": "tq-3870",
+    "priority": 3,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.480Z",
+    "eligible_at": "2026-03-16T06:31:46.480Z",
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": []
+  },
+  {
+    "id": "tq-a2ea.8ab6",
+    "description": "Add --branch option to claim, ready, list, and show commands",
+    "payload": {
+      "details": "All read and claim operations gain an optional branch parameter. Implementation: prefix queries with CALL dolt_checkout(branch) within the connection/transaction, or use Dolt's AS OF syntax (SELECT ... FROM tasks AS OF 'branchname'). claim and complete/fail on a branch must operate on that branch's view. CLI: tq claim --branch <name>, tq list --branch <name>, tq ready --branch <name>, tq show <id> --branch <name>. Default branch is main."
+    },
+    "status": "pending",
+    "parent_id": "tq-a2ea",
+    "priority": 2,
+    "result_payload": null,
+    "created_by": "human",
+    "claimed_by": null,
+    "created_at": "2026-03-16T06:31:46.151Z",
+    "eligible_at": null,
+    "claimed_at": null,
+    "completed_at": null,
+    "dependencies": [
+      "tq-a2ea.365b"
+    ]
+  }
+]

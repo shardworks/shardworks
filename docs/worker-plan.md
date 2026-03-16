@@ -1,72 +1,203 @@
 # Worker — Implementation Plan
 
-Goal: a thin `packages/worker` Node.js/TypeScript launcher that receives a task ID (from the conductor or CLI), spawns `claude -p` with that task ID in the prompt, and exits. The agent completes the task using the `tq` CLI and its normal tool set. No DB access, no HTTP calls, no task parsing in the launcher.
+Goal: a thin `packages/worker` Node.js/TypeScript launcher that receives a pre-created worker identity (agent ID + optional resume session), spawns `claude -p --output-format json` in a dedicated git worktree, and returns the captured session ID to the caller. The agent completes the task using the `tq` CLI. No DB access, no task parsing, no state files in the worker itself.
+
+---
+
+## Worker identity
+
+The **conductor** pre-creates the worker identity before spawning. It must do this first because it needs the agent ID to call `tq claim --agent <id>`.
+
+A worker identity consists of:
+
+| Field | Source | Notes |
+|-------|--------|-------|
+| **Agent ID** | Conductor-generated UUID | Stable identifier. Used in `claimed_by`, `tq complete`, `tq fail`, and the git worktree name. |
+| **Session ID** | Claude-generated (first run) | Captured from `--output-format json` output. Used for `--resume` on subsequent invocations. |
+
+These are two distinct IDs. The agent ID is known before Claude ever runs. The session ID is discovered after the first invocation and handed back to the conductor for storage.
+
+**Conductor lifecycle for a new worker:**
+1. Generate agent UUID: `crypto.randomUUID()`
+2. `tq claim --agent <uuid>` — atomically claims the task
+3. `worker --task-id <id> --agent-id <uuid>` — spawn worker (no `--resume-session` on first run)
+4. Worker exits → conductor reads session ID from worker's stdout
+5. Store `(agent-id, session-id)` pair for future invocations
+
+**Conductor lifecycle for a restarted worker:**
+1. `worker --task-id <id> --agent-id <uuid> --resume-session <session-id>`
+
+---
+
+## Worktrees
+
+Each worker runs in a dedicated git worktree tied to its agent ID. All invocations of the same worker — across process restarts, across multiple tasks in the session — use the same worktree.
+
+### Native Claude support
+
+On **first invocation**, the launcher passes `--worktree <agent-id>` to Claude. Claude creates the worktree and associates it with the session.
+
+On **subsequent invocations**, the launcher passes `--resume <session-id>`. Claude restores the session and its associated worktree automatically.
+
+The launcher does not manage worktree paths — Claude handles this natively through the session.
+
+```
+First run:
+  claude -p --output-format json \
+    --worktree <agent-id> \
+    --permission-mode bypassPermissions \
+    --model sonnet \
+    "<prompt>"
+  → creates worktree named <agent-id>
+  → JSON output contains session_id
+
+Subsequent runs (resume or restart):
+  claude -p --output-format json \
+    --resume <session-id> \
+    --permission-mode bypassPermissions \
+    --model sonnet \
+    "<prompt>"
+  → restores session + worktree
+```
+
+> **Assumption to verify:** `--resume` in `-p` mode restores the session's associated worktree without needing an explicit `--worktree` flag. Test this before building the launcher.
+
+---
+
+## State transitions
+
+### Status lifecycle
+
+```
+pending ──(deps met)──► eligible ──(conductor claims)──► in_progress ──(worker)──► completed
+                                                                │
+                                                                └──(worker/supervisor)──► failed
+```
+
+### Transition ownership
+
+| Transition | Owner | How |
+|---|---|---|
+| `eligible` → `in_progress` | **Conductor** | `tq claim --agent <agent-uuid>` before spawning worker |
+| `in_progress` → `completed` | **Worker (agent)** | `/tq-complete` skill → `tq complete <id> --agent <agent-uuid> -r <json>` |
+| `in_progress` → `failed` (task-level) | **Worker (agent)** | `/tq-fail` skill → `tq fail <id> --agent <agent-uuid> --reason <text>` |
+| `in_progress` → `failed` (process crash) | **Supervisor** | Detects dead process; `tq fail <id> --agent <agent-uuid> --reason "max restarts exceeded"` |
+
+### Worker exit contract
+
+The worker exits 0 if the agent updated task state. It exits non-zero only on process-level failure before state was written. The supervisor uses exit code + `tq show <id>` status to decide whether to `--resume` and retry or call `tq fail`.
+
+### Post-MVP: `assigned` status
+
+When the queue server adds `assigned`, the conductor will use `tq assign` (not `tq claim`) so that assignment and process-start become separate transitions. The supervisor will handle `in_progress` → `assigned` resets on crash. The current `tq claim` atomically performs both.
 
 ---
 
 ## Architecture
 
 ```
-Conductor (future)
-  └─► worker --task-id tq-a1b2
-        │
-        └─► spawn: claude -p "Complete task tq-a1b2"
-                     │
-                     ├─ Bash: tq get tq-a1b2        (read task)
-                     ├─ Bash: tq dep-results tq-a1b2 (read inputs)
-                     ├─ ... do the work ...
-                     ├─ /tq-complete tq-a1b2         (skill)
-                     │    └─ Bash: tq complete ...
-                     └─ exit
+Conductor
+  ├─ uuid = crypto.randomUUID()
+  ├─ tq claim --agent <uuid>                      (eligible → in_progress)
+  └─ worker --task-id tq-a1b2 --agent-id <uuid> [--resume-session <sid>]
+               │
+               ├─ first run:  claude -p --output-format json --worktree <uuid> "<prompt>"
+               └─ resume:     claude -p --output-format json --resume <sid>   "<prompt>"
+                                        │
+                                        │  (agent knows its identity from system prompt)
+                                        ├─ Bash: tq show tq-a1b2
+                                        ├─ Bash: tq dep-results tq-a1b2
+                                        ├─ ... work in worktree ...
+                                        └─ /tq-complete or /tq-fail (uses agent-id from prompt)
+                                        │
+                                        └─ JSON stdout → launcher extracts session_id
+                                             └─ worker prints session_id → conductor stores it
 ```
 
-The conductor is responsible for claiming the task before invoking the worker. The worker assumes the task is already `in_progress` and `claimed_by` this agent. The worker's only DB interactions are reads (`tq get`, `tq dep-results`) and the terminal write (`tq complete` / `tq fail`).
+---
+
+## Prompt design
+
+The prompt is generic. The agent reads task state itself and decides whether to continue or start fresh:
+
+```
+Your worker identity: agent ID = {{AGENT_ID}}
+
+Use this agent ID as the --agent value in all tq commands (complete, fail).
+
+Work on task {{TASK_ID}}.
+
+Check the task with `tq show {{TASK_ID}}`. If the task is in_progress and you have
+prior conversation history for it, continue from where you left off. If this is a
+fresh start, read the description and payload, fetch dependency results with
+`tq dep-results {{TASK_ID}}`, then do the work.
+
+When done, use /tq-complete. If you cannot complete the task, use /tq-fail with a
+clear reason.
+```
+
+---
+
+## `tq` CLI reference
+
+All commands exit 0 on success, non-zero on error. Output is JSON.
+
+```bash
+# Read
+tq show <id>                                        # full task object
+tq dep-results <id>                                 # { depId: result_payload, ... }
+tq list [--status <s>] [--parent <id>] [--created-by <id>]
+tq ready                                            # eligible tasks, priority order
+tq subtree <id>                                     # descendants + status rollup
+
+# Claim (conductor)
+tq claim --agent <id>                               # eligible → in_progress; prints task
+
+# Terminal state (worker agent)
+tq complete <id> --agent <id> -r <json>             # in_progress → completed
+tq fail <id> --agent <id> --reason <text>           # in_progress → failed
+
+# Create tasks (agent, for subtasks)
+tq enqueue "<description>" \
+  [--payload <json>] \
+  [--depends-on <id>] \                             # repeatable
+  [--parent <id>] \
+  [--priority <n>] \
+  [--created-by <id>]
+
+tq batch <file>                                     # batch-enqueue graph from JSON (- for stdin)
+```
+
+**Notes:**
+- `--agent` on `complete` and `fail` is validated against `claimed_by` — must match the value used in `tq claim`
+- `-r` is short for `--result` on `tq complete`
+- `tq claim` has no `--tags` flag currently; tag filtering is not yet exposed in the CLI
+- `tq batch` accepts `-` for stdin: `echo '[...]' | tq batch -`
 
 ---
 
 ## How the agent learns about the task queue
 
-Three layers, each with a different scope:
-
 | Layer | What it contains | Where it lives |
 |-------|-----------------|----------------|
-| `CLAUDE.md` | `tq` CLI reference: all commands, flags, output format | Repo root — always in context |
-| Project skills | Workflow patterns: complete, fail, create subtask | `.claude/commands/tq-*.md` |
-| System prompt | Agent identity only: agent ID, tags, one-liner on role | Worker launcher — injected at spawn time |
-
-The system prompt intentionally contains no schema or SQL. The CLI and skills handle all task queue interactions; the agent uses them naturally via its Bash tool and slash commands.
-
----
-
-## `tq` CLI (assumed interface)
-
-The task queue CLI is a separate package (`packages/tq-cli` or a binary built from `queue-server`). The worker plan assumes the following commands exist; the CLI plan specifies their implementation:
-
-```
-tq get <id>                     # print task JSON
-tq dep-results <id>             # print {depId: result_payload, ...} JSON
-tq complete <id> --result <json># mark completed, write result_payload
-tq fail <id> --reason <string>  # mark failed
-tq create ...                   # enqueue a new task (for subtasks)
-```
-
-All commands exit 0 on success, non-zero on error, and write JSON to stdout.
+| `CLAUDE.md` | Full `tq` CLI reference (commands, flags, examples) | Repo root — always in context |
+| Project skills | Workflow patterns with verification steps | `.claude/commands/tq-*.md` |
+| Launcher prompt | Agent ID + task ID + generic start-or-continue instruction | Injected at spawn time |
 
 ---
 
 ## Project skills
 
-Three skills, added as project-level slash commands in `.claude/commands/`:
-
 ### `/tq-complete`
 
 ```
-Usage: /tq-complete <task-id> <result-json-or-summary>
+Usage: /tq-complete <task-id> <result>
 
-Marks a task queue task as completed. Steps:
-1. Run: tq complete <task-id> --result '<result>'
+Mark a task as completed. <result> is a JSON string or plain text summary.
+1. Run: tq complete <task-id> --agent <your-agent-id> -r '<result>'
+   (Your agent ID is in the system prompt under "agent ID =")
 2. Verify exit code 0.
-3. Confirm by running: tq get <task-id> and checking status === "completed".
+3. Confirm: tq show <task-id> → status should be "completed".
 ```
 
 ### `/tq-fail`
@@ -74,39 +205,36 @@ Marks a task queue task as completed. Steps:
 ```
 Usage: /tq-fail <task-id> <reason>
 
-Marks a task queue task as failed. Steps:
-1. Run: tq fail <task-id> --reason '<reason>'
+Mark a task as failed with a reason.
+1. Run: tq fail <task-id> --agent <your-agent-id> --reason '<reason>'
+   (Your agent ID is in the system prompt under "agent ID =")
 2. Verify exit code 0.
 ```
 
 ### `/tq-subtask`
 
 ```
-Usage: /tq-subtask <parent-id> <description> [--tags <tags>] [--deps <ids>]
+Usage: /tq-subtask <parent-id> "<description>" [--payload <json>] [--depends-on <id>]
 
-Creates a child task under the given parent. Steps:
-1. Run: tq create --parent <parent-id> --description '<description>' [--tags ...] [--deps ...]
-2. Print the new task ID.
+Create a child task under a parent.
+1. Run: tq enqueue "<description>" --parent <parent-id> --created-by <your-agent-id> [--payload ...] [--depends-on ...]
+2. Note the new task ID from the output.
 ```
-
-Skills are the canonical way for the agent to interact with task state. The agent should prefer `/tq-complete` over a raw `tq complete` shell call, since the skill includes the verification step.
 
 ---
 
-## System prompt (minimal)
+## System prompt
 
 ```
 You are an autonomous software engineering agent.
-Agent ID: {{AGENT_ID}}
-Capability tags: {{AGENT_TAGS}}
+Your agent ID: {{AGENT_ID}}
 
-You will be given a task ID. Use the tq CLI (documented in CLAUDE.md) to read
-the task and its dependency results, then complete the work. When done, use
-/tq-complete to record your result. If you cannot complete the task, use
-/tq-fail with a clear reason.
+Use {{AGENT_ID}} as the --agent value in all tq complete and tq fail commands.
 
-The task is already claimed. Do not attempt to claim or release it.
+Refer to CLAUDE.md for the full tq CLI reference.
 ```
+
+The launcher prompt (the user message passed to `-p`) contains the task ID and start-or-continue instruction. The system prompt contains only stable identity information.
 
 ---
 
@@ -117,38 +245,38 @@ packages/worker/
 ├── package.json
 ├── tsconfig.json
 └── src/
-    ├── index.ts        # CLI entrypoint: parse --task-id, spawn claude, exit
-    ├── config.ts       # Typed config from env + CLI args
-    └── launcher.ts     # Builds argv, spawns claude, streams output, resolves exit
+    ├── index.ts        # CLI entrypoint; parses args, calls launcher, prints session_id, exits
+    ├── config.ts       # Typed config from CLI args + env
+    └── launcher.ts     # Builds argv (--worktree or --resume), spawns claude,
+                        # parses JSON output, extracts session_id
 
 .claude/commands/
     ├── tq-complete.md
     ├── tq-fail.md
     └── tq-subtask.md
 
-CLAUDE.md              # Gets a new "Task Queue CLI" section
+CLAUDE.md               # Gets a "Task Queue CLI" section
 ```
 
 ---
 
 ## Configuration
 
-| Source | Var / Flag | Required | Default | Notes |
-|--------|-----------|----------|---------|-------|
-| CLI arg | `--task-id` | yes | — | Task to execute |
-| env | `AGENT_ID` | no | `worker-<hostname>-<pid>` | Substituted into system prompt |
-| env | `AGENT_TAGS` | no | `""` | Substituted into system prompt |
-| env | `WORK_DIR` | no | `process.cwd()` | Working directory for claude subprocess |
-| env | `CLAUDE_MODEL` | no | `sonnet` | Passed to `--model` |
-| env | `CLAUDE_MAX_BUDGET_USD` | no | unset | Per-invocation cost cap |
+| Source | Flag / Var | Required | Notes |
+|--------|-----------|----------|-------|
+| CLI arg | `--task-id` | yes | Task to work on |
+| CLI arg | `--agent-id` | yes | Conductor-generated UUID; injected into prompt and used as worktree name on first run |
+| CLI arg | `--resume-session` | no | Claude session UUID; absent on first run, required on restart |
+| env | `AGENT_TAGS` | no | Injected into system prompt |
+| env | `WORK_DIR` | no | Base working directory; defaults to repo root (claude subprocess CWD before worktree) |
+| env | `CLAUDE_MODEL` | no | `sonnet` |
+| env | `CLAUDE_MAX_BUDGET_USD` | no | Per-invocation cost cap |
 
-No `DOLT_*` vars — the worker does not connect to the DB directly.
+**Output:** The launcher prints the captured `session_id` to stdout on exit. The conductor reads this and stores `(agent-id → session-id)` for future restarts.
 
 ---
 
 ## Implementation tasks
-
----
 
 ### W01 — Package scaffold
 
@@ -160,66 +288,81 @@ No `DOLT_*` vars — the worker does not connect to the DB directly.
 
 ### W02 — Config module
 
-`src/config.ts` — parses `--task-id` (required) and env vars into `WorkerConfig`. Throws on missing task ID.
+`src/config.ts` — parses `--task-id`, `--agent-id` (both required), `--resume-session` (optional), and env vars into `WorkerConfig`.
 
 **Depends on:** W01
 
 ---
 
-### W03 — Project skills
+### W03 — Launcher
 
-Create `.claude/commands/tq-complete.md`, `tq-fail.md`, `tq-subtask.md` with the workflow patterns above.
-
-**Depends on:** nothing (can be written independently)
-
----
-
-### W04 — CLAUDE.md task queue section
-
-Add a "Task Queue CLI" section to the root `CLAUDE.md` documenting all `tq` commands, flags, and output format. This is the ambient reference Claude reads automatically.
-
-**Depends on:** `tq` CLI being specced (can be a placeholder until then)
-
----
-
-### W05 — Launcher
-
-`src/launcher.ts` — renders the system prompt (substitutes `AGENT_ID`, `AGENT_TAGS`), builds claude argv, spawns subprocess, pipes stderr to process stderr, resolves `{ exitCode }` on exit.
+`src/launcher.ts`:
+- If `resumeSession` is absent: build argv with `--worktree <agentId>`
+- If `resumeSession` is present: build argv with `--resume <resumeSession>`
+- Always include: `-p --output-format json --permission-mode bypassPermissions --model <model>`
+- Constructs system prompt (substitutes `AGENT_ID`) and user prompt (substitutes `TASK_ID`)
+- Spawns subprocess, pipes stderr to process stderr
+- Accumulates stdout, parses JSON on exit, extracts `session_id`
+- Resolves `{ exitCode, sessionId }`
 
 **Depends on:** W02
 
 ---
 
-### W06 — Entrypoint
+### W04 — Entrypoint
 
-`src/index.ts` — validates config, calls `runClaude`, exits with the same code.
+`src/index.ts` — validates config, calls launcher, prints `session_id` to stdout, exits with subprocess exit code.
 
-**Depends on:** W05
+**Depends on:** W03
+
+---
+
+### W05 — Project skills
+
+Create `.claude/commands/tq-complete.md`, `tq-fail.md`, `tq-subtask.md`.
+
+**Depends on:** nothing
+
+---
+
+### W06 — CLAUDE.md task queue section
+
+Add "Task Queue CLI" section to root `CLAUDE.md` matching the real CLI commands and flags above.
+
+**Depends on:** nothing
 
 ---
 
 ### W07 — Smoke test
 
-`test/smoke.test.ts` — requires a live queue server and a pre-inserted `in_progress` task. Spawns the worker against that task ID, waits for exit, queries the queue server to assert `status === 'completed'`.
+`test/smoke.test.ts` — requires live queue server (skips if absent):
 
-**Depends on:** W06, T15 (queue server)
+1. Generate `agentId = crypto.randomUUID()`
+2. `tq enqueue "Say hello world"` → task ID
+3. `tq claim --agent <agentId>` → task in_progress
+4. Spawn: `worker --task-id <id> --agent-id <agentId>`; capture printed session_id
+5. Assert exit code 0; `tq show <id>` → `status === "completed"`
+6. Verify worktree was created (check `git worktree list`)
+7. Re-spawn with `--resume-session <captured-sid>` on same (now completed) task — assert Claude reads status and exits cleanly without re-doing work
+
+**Depends on:** W04, T15
 
 ---
 
 ## Dependency graph
 
 ```
-W03  W04   (independent, write anytime)
+W05  W06   (independent)
 
 T01
  └── W01
       └── W02
-           └── W05
-                └── W06
+           └── W03
+                └── W04
                      └── W07 (also needs T15)
 ```
 
-Linear critical path: **T01 → W01 → W02 → W05 → W06**
+Linear critical path: **T01 → W01 → W02 → W03 → W04**
 
 ---
 
@@ -227,9 +370,10 @@ Linear critical path: **T01 → W01 → W02 → W05 → W06**
 
 | Feature | Reason deferred |
 |---------|----------------|
-| Polling loop / conductor logic | Conductor is a separate component; worker is single-shot |
-| Task claiming in the worker | Conductor's responsibility |
-| Per-task git worktree isolation | Post-MVP |
-| Heartbeat / orphan recovery | Mirrors queue server deferral |
-| Retry on claude process error | Post-MVP |
-| Docker compose entry | Add after end-to-end loop works |
+| `assigned` status + `tq assign` / `tq start` | Queue server addition required |
+| Conductor / supervisor implementation | Separate components |
+| Worktree cleanup / merge strategy | Post-MVP; one branch per worker accumulates work |
+| Session rotation (context window management) | Post-MVP |
+| Tag-based claim filtering in CLI | Not yet exposed in `tq claim` |
+| Max-restart / give-up logic | Supervisor's responsibility |
+| Docker compose entry | After end-to-end loop works |

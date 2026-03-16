@@ -26,7 +26,7 @@ services:
     environment:
       DOLT_ROOT_HOST: '%'
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      test: ["CMD-SHELL", "dolt sql -q 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 10
