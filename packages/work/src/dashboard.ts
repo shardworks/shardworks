@@ -171,7 +171,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     style: { bg: 'blue', fg: 'white' },
     tags: true,
-    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh',
+    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle completed subtrees',
   });
 
   // ── State ──────────────────────────────────────────────────────────────
@@ -181,6 +181,7 @@ export async function dashboard(): Promise<void> {
   let currentLogWorkerId: string | null = null;
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
+  let hideCompletedSubtrees = true;
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -223,7 +224,12 @@ export async function dashboard(): Promise<void> {
     }
   }
 
-  async function fetchTaskTree(): Promise<string[]> {
+  interface TaskTreeResult {
+    lines: string[];
+    hiddenCount: number;
+  }
+
+  async function fetchTaskTree(): Promise<TaskTreeResult> {
     try {
       const [rows] = await pool.execute<TaskRow[]>(
         `SELECT id, description, status, parent_id, priority FROM tasks
@@ -237,6 +243,15 @@ export async function dashboard(): Promise<void> {
         const pid = r.parent_id ?? null;
         if (!children.has(pid)) children.set(pid, []);
         children.get(pid)!.push(r);
+      }
+
+      // Check whether every node in a subtree is completed
+      function isSubtreeCompleted(nodeId: string): boolean {
+        const node = byId.get(nodeId);
+        if (!node) return true;
+        if (node.status !== 'completed') return false;
+        const kids = children.get(nodeId) ?? [];
+        return kids.every(k => isSubtreeCompleted(k.id));
       }
 
       const lines: string[] = [];
@@ -255,13 +270,18 @@ export async function dashboard(): Promise<void> {
 
       // Render root tasks (no parent)
       const roots = children.get(null) ?? [];
+      let hiddenCount = 0;
       for (const root of roots) {
+        if (hideCompletedSubtrees && isSubtreeCompleted(root.id)) {
+          hiddenCount++;
+          continue;
+        }
         renderNode(root, 0);
       }
 
-      return lines;
+      return { lines, hiddenCount };
     } catch (err) {
-      return [`{red-fg}Error loading tasks: ${err}{/red-fg}`];
+      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], hiddenCount: 0 };
     }
   }
 
@@ -448,10 +468,17 @@ export async function dashboard(): Promise<void> {
       renderWorkersList(workers);
 
       // Update pipeline
-      if (tree.length === 0) {
-        pipelineBox.setItems(['{grey-fg}No tasks{/grey-fg}']);
+      const { lines: treeLines, hiddenCount } = tree;
+      const hiddenLabel = hiddenCount > 0
+        ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
+        : '';
+      pipelineBox.setLabel(` Task Pipeline${hiddenLabel} `);
+      if (treeLines.length === 0) {
+        pipelineBox.setItems([hiddenCount > 0
+          ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
+          : '{grey-fg}No tasks{/grey-fg}']);
       } else {
-        pipelineBox.setItems(tree);
+        pipelineBox.setItems(treeLines);
       }
 
       // Auto-select first worker's log if none selected
@@ -493,6 +520,11 @@ export async function dashboard(): Promise<void> {
   });
 
   screen.key(['r'], () => {
+    refresh();
+  });
+
+  screen.key(['h'], () => {
+    hideCompletedSubtrees = !hideCompletedSubtrees;
     refresh();
   });
 
