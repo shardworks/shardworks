@@ -48,6 +48,7 @@ import {
   listTasks,
   batchEnqueue,
   getMaxPriority,
+  claim,
 } from '../src/tasks.js';
 
 // ---------------------------------------------------------------------------
@@ -437,5 +438,73 @@ describe('batchEnqueue', () => {
         ],
       }),
     ).rejects.toThrow(/Cycle detected/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claim — role filter NULL fallback
+// ---------------------------------------------------------------------------
+
+describe('claim', () => {
+  const now = new Date('2024-06-15T12:00:00.000Z');
+
+  it('refiner with role=refiner claims draft task with assigned_role=NULL', async () => {
+    // The SELECT query should use (assigned_role = ? OR assigned_role IS NULL)
+    // for role=refiner, so a row with assigned_role=null is returned.
+    const draftRow = makeTaskRow({
+      id: 'tq-draft001',
+      status: 'draft',
+      assigned_role: null,
+      claimed_at: now,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[draftRow]])  // SELECT ... FOR UPDATE
+      .mockResolvedValueOnce([[]])          // UPDATE tasks SET status='in_progress'
+      .mockResolvedValueOnce([[]]);         // attachDeps
+
+    const result = await claim('refiner-agent', [], true, 'refiner');
+    expect(result.task).not.toBeNull();
+    expect(result.task!.id).toBe('tq-draft001');
+
+    // Verify the SQL query used (assigned_role = ? OR assigned_role IS NULL)
+    const selectCall = mockExecute.mock.calls[0];
+    const sql: string = selectCall[0] as string;
+    expect(sql).toMatch(/assigned_role = \? OR assigned_role IS NULL/);
+  });
+
+  it('implementer with role=implementer claims eligible task with assigned_role=NULL', async () => {
+    const eligibleRow = makeTaskRow({
+      id: 'tq-elig001',
+      status: 'eligible',
+      assigned_role: null,
+      claimed_at: now,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[eligibleRow]])  // SELECT ... FOR UPDATE
+      .mockResolvedValueOnce([[]])             // findEligibleLeaf — no children
+      .mockResolvedValueOnce([[]])             // UPDATE tasks SET status='in_progress'
+      .mockResolvedValueOnce([[]]);            // attachDeps
+
+    const result = await claim('impl-agent', [], false, 'implementer');
+    expect(result.task).not.toBeNull();
+    expect(result.task!.id).toBe('tq-elig001');
+
+    const selectCall = mockExecute.mock.calls[0];
+    const sql: string = selectCall[0] as string;
+    expect(sql).toMatch(/assigned_role = \? OR assigned_role IS NULL/);
+  });
+
+  it('planner with role=planner does NOT get NULL fallback (exact match only)', async () => {
+    // SELECT returns empty — no planner-assigned tasks available.
+    mockExecute.mockResolvedValueOnce([[]]); // SELECT ... FOR UPDATE
+
+    const result = await claim('planner-agent', [], false, 'planner');
+    expect(result.task).toBeNull();
+
+    const selectCall = mockExecute.mock.calls[0];
+    const sql: string = selectCall[0] as string;
+    // Should be exact match, not the OR NULL pattern
+    expect(sql).not.toMatch(/assigned_role = \? OR assigned_role IS NULL/);
+    expect(sql).toMatch(/assigned_role = \?/);
   });
 });
