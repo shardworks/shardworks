@@ -190,6 +190,25 @@ export async function dashboard(): Promise<void> {
     padding: { left: 1, right: 1 },
   } as unknown as Widgets.ListOptions<Widgets.ListElementStyle>);
 
+  // ── Pipeline filter input (1 line, pinned at bottom, hidden by default) ─
+
+  const filterInput = blessed.textbox({
+    parent: pipelineContainer,
+    bottom: 0,
+    left: 0,
+    width: '100%',
+    height: 1,
+    style: {
+      fg: 'white',
+      bg: '#1a1a1a',
+      focus: { fg: 'white', bg: '#2a2a2a' },
+    },
+    hidden: true,
+    inputOnFocus: true,
+    keys: true,
+    tags: false,
+  } as Widgets.TextboxOptions);
+
   // ── Status bar ─────────────────────────────────────────────────────────
 
   const statusBar = blessed.box({
@@ -202,6 +221,7 @@ export async function dashboard(): Promise<void> {
     tags: true,
     content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} hide completed',
   });
+  // statusBar content is managed by updateStatusBar() — initial content set above is overwritten on first render
 
   // ── State ──────────────────────────────────────────────────────────────
 
@@ -214,6 +234,10 @@ export async function dashboard(): Promise<void> {
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
   let hideCompletedSubtrees = true;
   const collapsedIds = new Set<string>();
+  let filterQuery = '';
+  let filterActive = false;
+  let pipelineTaskMeta: Array<{ taskId: string; status: string; claimedBy: string | null }> = [];
+  let statusBarTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -278,15 +302,22 @@ export async function dashboard(): Promise<void> {
     }
   }
 
+  interface TaskMeta {
+    taskId: string;
+    status: string;
+    claimedBy: string | null;
+  }
+
   interface TaskTreeResult {
     lines: string[];
+    meta: TaskMeta[];
     hiddenCount: number;
   }
 
   async function fetchTaskTree(): Promise<TaskTreeResult> {
     try {
       const [rows] = await pool.execute<TaskRow[]>(
-        `SELECT id, description, status, parent_id, priority, assigned_role FROM tasks
+        `SELECT id, description, status, parent_id, priority, assigned_role, claimed_by FROM tasks
          ORDER BY priority DESC, created_at ASC`,
       );
 
@@ -308,7 +339,32 @@ export async function dashboard(): Promise<void> {
         return kids.every(k => isSubtreeCompleted(k.id));
       }
 
+      // Compute the set of visible node IDs when a filter is active.
+      // A node is visible if it matches the query OR is an ancestor of a match.
+      let visibleNodes: Set<string> | null = null;
+      const activeFilter = filterQuery.trim();
+      if (activeFilter.length > 0) {
+        const lq = activeFilter.toLowerCase();
+        visibleNodes = new Set<string>();
+        for (const row of rows) {
+          if (
+            row.id.toLowerCase().includes(lq) ||
+            row.description.toLowerCase().includes(lq)
+          ) {
+            visibleNodes.add(row.id);
+            // Walk ancestors and add them for context
+            let pid = row.parent_id ?? null;
+            while (pid !== null) {
+              if (visibleNodes.has(pid)) break; // already added full chain
+              visibleNodes.add(pid);
+              pid = byId.get(pid)?.parent_id ?? null;
+            }
+          }
+        }
+      }
+
       const lines: string[] = [];
+      const meta: TaskMeta[] = [];
 
       /** Count all descendants (not including the node itself). */
       function countDescendants(nodeId: string): number {
@@ -332,6 +388,14 @@ export async function dashboard(): Promise<void> {
         continuations: boolean[],
         isLast: boolean,
       ): void {
+        // ── Filter: skip nodes not in the visible set ─────────────────────
+        if (visibleNodes !== null && !visibleNodes.has(node.id)) {
+          // Neither this node nor any descendant matches — prune the branch.
+          // (Because every ancestor of a matching node was added to visibleNodes,
+          // if a node is absent its entire subtree can be safely skipped.)
+          return;
+        }
+
         // ── Connector prefix ──────────────────────────────────────────────
         let prefix = '';
         if (indent > 0) {
@@ -390,6 +454,7 @@ export async function dashboard(): Promise<void> {
         const colorClose = `{/${lineColor}-fg}`;
 
         lines.push(`${colorOpen}${prefix}${collapseIndicator}${statusIcon} ${node.id} ${desc}${colorClose}${countSuffix}`);
+        meta.push({ taskId: node.id, status: node.status, claimedBy: node.claimed_by ?? null });
 
         // ── Recurse into children (skip when collapsed) ───────────────────
         if (!isCollapsed) {
@@ -417,9 +482,9 @@ export async function dashboard(): Promise<void> {
         renderNode(root, 0, [], false);
       }
 
-      return { lines, hiddenCount };
+      return { lines, meta, hiddenCount };
     } catch (err) {
-      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], hiddenCount: 0 };
+      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], meta: [], hiddenCount: 0 };
     }
   }
 
@@ -463,6 +528,73 @@ export async function dashboard(): Promise<void> {
       case 'blocked':     return '#FF8C00';
       default:            return 'white';
     }
+  }
+
+  // ── Status bar helpers ─────────────────────────────────────────────────
+
+  function statusBarText(): string {
+    if (focusedPanel === 'pipeline') {
+      return ' {bold}q{/bold} quit | {bold}Tab{/bold} switch panel | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} logs | {bold}h{/bold} toggle | {bold}/{/bold} search | {bold}R{/bold} refresh | {bold}r{/bold} retry(failed) | {bold}c{/bold} cancel | {bold}p{/bold} publish';
+    }
+    return ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle done | {bold}/{/bold} search pipeline';
+  }
+
+  function updateStatusBar(): void {
+    statusBar.setContent(statusBarText());
+    screen.render();
+  }
+
+  /** Show a temporary message in the status bar, then restore normal hints. */
+  function showStatusMessage(msg: string): void {
+    statusBar.setContent(` ${msg}`);
+    screen.render();
+    if (statusBarTimer) clearTimeout(statusBarTimer);
+    statusBarTimer = setTimeout(() => {
+      updateStatusBar();
+    }, 3000);
+  }
+
+  // ── Pipeline quick-action DB helpers ───────────────────────────────────
+
+  async function retryTask(taskId: string): Promise<void> {
+    const now = new Date();
+    await pool.execute(
+      `UPDATE tasks SET status = 'eligible', eligible_at = ?, claimed_by = NULL, claimed_at = NULL WHERE id = ? AND status = 'failed'`,
+      [now, taskId],
+    );
+  }
+
+  async function cancelTask(taskId: string, reason: string): Promise<void> {
+    const now = new Date();
+    const resultPayload = JSON.stringify({ cancelled: true, cancelled_by: 'dashboard', reason });
+    await pool.execute(
+      `UPDATE tasks SET status = 'cancelled', result_payload = ?, completed_at = ? WHERE id = ? AND status IN ('draft', 'pending', 'eligible')`,
+      [resultPayload, now, taskId],
+    );
+  }
+
+  async function publishTask(taskId: string): Promise<void> {
+    const now = new Date();
+    // Determine whether there are any incomplete dependencies
+    const [depRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT d.dep_id FROM task_dependencies d
+       JOIN tasks t ON t.id = d.dep_id
+       WHERE d.task_id = ? AND t.status != 'completed'`,
+      [taskId],
+    );
+    const hasIncompleteDeps = (depRows as RowDataPacket[]).length > 0;
+    const newStatus = hasIncompleteDeps ? 'pending' : 'eligible';
+    const eligibleAt = hasIncompleteDeps ? null : now;
+    await pool.execute(
+      `UPDATE tasks SET status = ?, eligible_at = ?, claimed_by = NULL, claimed_at = NULL WHERE id = ? AND status IN ('draft', 'in_progress')`,
+      [newStatus, eligibleAt, taskId],
+    );
+  }
+
+  /** Return the TaskMeta for the currently selected pipeline row, or null. */
+  function getSelectedPipelineTask(): { taskId: string; status: string; claimedBy: string | null } | null {
+    const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
+    return pipelineTaskMeta[idx] ?? null;
   }
 
   // ── Render functions ───────────────────────────────────────────────────
@@ -757,17 +889,23 @@ export async function dashboard(): Promise<void> {
       renderWorkersList(workers);
 
       // Update pipeline
+      pipelineTaskMeta = tree.meta;
       const { lines: treeLines, hiddenCount } = tree;
       const hiddenLabel = hiddenCount > 0
         ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
         : '';
-      pipelineContainer.setLabel(` Task Pipeline${hiddenLabel} `);
+      const filterLabel = filterQuery.trim().length > 0
+        ? ` {cyan-fg}/ ${filterQuery.trim()}{/cyan-fg}`
+        : '';
+      pipelineContainer.setLabel(` Task Pipeline${hiddenLabel}${filterLabel} `);
       if (treeLines.length === 0) {
-        pipelineBox.setItems([
-          hiddenCount > 0
+        const curFilter = filterQuery.trim();
+        const msg = curFilter.length > 0
+          ? `{grey-fg}No tasks match {bold}/${curFilter}{/bold} — press {bold}Esc{/bold} to clear{/grey-fg}`
+          : hiddenCount > 0
             ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
-            : '{grey-fg}No tasks{/grey-fg}',
-        ]);
+            : '{grey-fg}No tasks{/grey-fg}';
+        pipelineBox.setItems([msg]);
       } else {
         pipelineBox.setItems(treeLines);
       }
@@ -807,16 +945,93 @@ export async function dashboard(): Promise<void> {
       (pipelineContainer.style as Record<string, unknown>).border = { fg: 'magenta' };
       (workersList.style as Record<string, unknown>).border = { fg: 'white' };
     }
-    screen.render();
+    updateStatusBar();
   });
 
+  // Global 'r' refreshes — unless pipeline is focused (where 'r' = retry)
   screen.key(['r'], () => {
+    if (focusedPanel !== 'pipeline') {
+      refresh();
+    }
+  });
+
+  // 'R' (uppercase) always refreshes regardless of focus
+  screen.key(['R'], () => {
     refresh();
   });
 
   screen.key(['h'], () => {
     hideCompletedSubtrees = !hideCompletedSubtrees;
     refresh();
+  });
+
+  // ── Filter open/close helpers ──────────────────────────────────────────
+
+  function openFilter(): void {
+    if (filterActive) return; // already open
+    filterActive = true;
+    filterQuery = '';
+    filterInput.clearValue();
+    filterInput.show();
+    // Shrink the list to make room for the filter bar at the bottom
+    (pipelineBox as unknown as { height: string | number }).height = '100%-2';
+    filterInput.focus();
+    screen.render();
+  }
+
+  function closeFilter(): void {
+    filterActive = false;
+    filterQuery = '';
+    filterInput.clearValue();
+    filterInput.hide();
+    (pipelineBox as unknown as { height: string | number }).height = '100%-1';
+    pipelineBox.focus();
+    refresh();
+  }
+
+  // Live-update the pipeline tree as the user types in the filter box
+  filterInput.on('keypress', (_ch: unknown, key: { name?: string; ctrl?: boolean }) => {
+    if (key.name === 'escape') {
+      closeFilter();
+      return;
+    }
+    if (key.name === 'enter') {
+      // Commit search, return focus to the list (keep filter visible if non-empty)
+      const query = filterInput.getValue().trim();
+      filterQuery = query;
+      filterActive = false;
+      if (query.length === 0) {
+        filterInput.hide();
+        (pipelineBox as unknown as { height: string | number }).height = '100%-1';
+      }
+      pipelineBox.focus();
+      refresh();
+      return;
+    }
+    // For any other key, schedule a refresh after blessed updates the value
+    setImmediate(() => {
+      const query = filterInput.getValue();
+      filterQuery = query;
+      // If the user clears the box, clear the filter
+      if (query.length === 0) {
+        filterQuery = '';
+      }
+      refresh();
+    });
+  });
+
+  // '/' opens the filter when the pipeline panel is focused
+  screen.key(['/'], () => {
+    if (focusedPanel === 'pipeline' && !filterActive) {
+      openFilter();
+    }
+  });
+
+  // Escape at screen level: close filter if active (so Esc always works)
+  screen.key(['escape'], () => {
+    if (filterActive) {
+      closeFilter();
+    }
   });
 
   workersList.on('select item', async (_item: unknown, index: number) => {
@@ -937,9 +1152,150 @@ export async function dashboard(): Promise<void> {
     await showLogOverlay(title, logPath);
   });
 
+  // ── Pipeline quick actions ──────────────────────────────────────────────
+  // r = retry (failed → eligible), c = cancel, p = publish (draft/in_progress → eligible/pending)
+  // These are only active when the pipeline panel has focus.
+
+  /** Show a yes/no confirmation dialog. Resolves true if user confirms. */
+  function confirmDialog(label: string, question: string): Promise<boolean> {
+    return new Promise(resolve => {
+      const q = blessed.question({
+        parent: screen,
+        border: 'line',
+        height: 'shrink',
+        width: '60%',
+        top: 'center',
+        left: 'center',
+        label: ` ${label} `,
+        tags: true,
+        keys: true,
+        vi: true,
+        style: {
+          border: { fg: 'yellow' },
+          label: { fg: 'white', bold: true },
+        },
+      });
+      screen.render();
+      q.ask(question, (_err: unknown, answer: string) => {
+        q.destroy();
+        screen.render();
+        resolve(answer === 'y' || answer === 'Y' || answer === 'yes');
+      });
+    });
+  }
+
+  /** Show a text-input prompt dialog. Resolves to the entered string, or null if cancelled. */
+  function promptDialog(label: string, question: string): Promise<string | null> {
+    return new Promise(resolve => {
+      const p = blessed.prompt({
+        parent: screen,
+        border: 'line',
+        height: 'shrink',
+        width: '60%',
+        top: 'center',
+        left: 'center',
+        label: ` ${label} `,
+        tags: true,
+        keys: true,
+        vi: true,
+        style: {
+          border: { fg: 'yellow' },
+          label: { fg: 'white', bold: true },
+        },
+      });
+      screen.render();
+      p.input(question, '', (_err: unknown, value: string) => {
+        p.destroy();
+        screen.render();
+        if (value === null || value === undefined) {
+          resolve(null);
+          return;
+        }
+        resolve(value.trim() || null);
+      });
+    });
+  }
+
+  // r — retry a failed task
+  pipelineBox.key(['r'], async () => {
+    const task = getSelectedPipelineTask();
+    if (!task) {
+      showStatusMessage('{red-fg}No task selected{/red-fg}');
+      return;
+    }
+    if (task.status !== 'failed') {
+      showStatusMessage(`{red-fg}Cannot retry: status is {bold}${task.status}{/bold} (retry only applies to failed tasks){/red-fg}`);
+      return;
+    }
+    const confirmed = await confirmDialog('Retry Task', `Retry failed task ${task.taskId}? (y/n)`);
+    if (!confirmed) return;
+    try {
+      await retryTask(task.taskId);
+      showStatusMessage(`{green-fg}Task {bold}${task.taskId}{/bold} marked eligible for retry{/green-fg}`);
+      await refresh();
+    } catch (err) {
+      showStatusMessage(`{red-fg}Retry failed: ${err}{/red-fg}`);
+    }
+  });
+
+  // c — cancel a draft/pending/eligible task
+  pipelineBox.key(['c'], async () => {
+    const task = getSelectedPipelineTask();
+    if (!task) {
+      showStatusMessage('{red-fg}No task selected{/red-fg}');
+      return;
+    }
+    const cancelableStatuses = new Set(['draft', 'pending', 'eligible']);
+    if (!cancelableStatuses.has(task.status)) {
+      showStatusMessage(`{red-fg}Cannot cancel: status is {bold}${task.status}{/bold} (cancel only applies to draft/pending/eligible){/red-fg}`);
+      return;
+    }
+    const reason = await promptDialog('Cancel Task', `Reason for cancelling ${task.taskId}:`);
+    if (reason === null) {
+      showStatusMessage('{grey-fg}Cancel aborted{/grey-fg}');
+      return;
+    }
+    const confirmed = await confirmDialog('Confirm Cancel', `Cancel task ${task.taskId}? (y/n)`);
+    if (!confirmed) {
+      showStatusMessage('{grey-fg}Cancel aborted{/grey-fg}');
+      return;
+    }
+    try {
+      await cancelTask(task.taskId, reason);
+      showStatusMessage(`{green-fg}Task {bold}${task.taskId}{/bold} cancelled{/green-fg}`);
+      await refresh();
+    } catch (err) {
+      showStatusMessage(`{red-fg}Cancel failed: ${err}{/red-fg}`);
+    }
+  });
+
+  // p — publish a draft or in_progress task (→ eligible or pending based on deps)
+  pipelineBox.key(['p'], async () => {
+    const task = getSelectedPipelineTask();
+    if (!task) {
+      showStatusMessage('{red-fg}No task selected{/red-fg}');
+      return;
+    }
+    const publishableStatuses = new Set(['draft', 'in_progress']);
+    if (!publishableStatuses.has(task.status)) {
+      showStatusMessage(`{red-fg}Cannot publish: status is {bold}${task.status}{/bold} (publish only applies to draft/in_progress){/red-fg}`);
+      return;
+    }
+    const confirmed = await confirmDialog('Publish Task', `Publish task ${task.taskId}? (y/n)`);
+    if (!confirmed) return;
+    try {
+      await publishTask(task.taskId);
+      showStatusMessage(`{green-fg}Task {bold}${task.taskId}{/bold} published{/green-fg}`);
+      await refresh();
+    } catch (err) {
+      showStatusMessage(`{red-fg}Publish failed: ${err}{/red-fg}`);
+    }
+  });
+
   // ── Start ──────────────────────────────────────────────────────────────
 
   workersList.focus();
+  updateStatusBar();
   await refresh();
 
   // Refresh every 3 seconds
@@ -955,6 +1311,7 @@ export async function dashboard(): Promise<void> {
   screen.on('destroy', () => {
     clearInterval(refreshTimer);
     clearInterval(logTimer);
+    if (statusBarTimer) clearTimeout(statusBarTimer);
   });
 
   screen.render();
