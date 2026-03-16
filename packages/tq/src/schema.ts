@@ -22,6 +22,14 @@ const STATEMENTS = [
     dep_id   VARCHAR(64) NOT NULL,
     PRIMARY KEY (task_id, dep_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS task_relationships (
+    from_task_id      VARCHAR(64)  NOT NULL,
+    to_task_id        VARCHAR(64)  NOT NULL,
+    relationship_type VARCHAR(32)  NOT NULL,
+    created_by        VARCHAR(255) NOT NULL,
+    created_at        DATETIME(3)  NOT NULL,
+    PRIMARY KEY (from_task_id, to_task_id, relationship_type)
+  )`,
 ];
 
 /** Migrations that may fail if already applied (e.g. column already exists). */

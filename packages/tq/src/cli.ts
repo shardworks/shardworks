@@ -25,6 +25,8 @@ import {
   ready,
   reap,
   getDepResults,
+  relate,
+  getRelations,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -350,6 +352,28 @@ program
       const ms = parseDuration(opts.staleAfter);
       return reap(ms, opts.release ?? false);
     });
+  });
+
+// ── tq relate ───────────────────────────────────────────────────────────────
+
+program
+  .command('relate <from-task-id> <to-task-id> <type>')
+  .description(
+    'Create a typed (non-scheduling) relationship between two tasks.\n' +
+    'Valid types: relates_to, duplicates, supersedes, replies_to, spawned_from',
+  )
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (fromTaskId: string, toTaskId: string, type: string, opts: { agent: string }) => {
+    await run(() => relate(fromTaskId, toTaskId, type, opts.agent));
+  });
+
+// ── tq relations ─────────────────────────────────────────────────────────────
+
+program
+  .command('relations <task-id>')
+  .description('List all typed relationships for a task (outgoing and incoming)')
+  .action(async (taskId: string) => {
+    await run(() => getRelations(taskId));
   });
 
 program.parse();

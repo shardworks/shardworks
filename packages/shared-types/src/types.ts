@@ -34,6 +34,22 @@ export interface Task {
   dependencies: string[];
 }
 
+/** Annotated (non-scheduling) relationship types between tasks. */
+export type RelationshipType =
+  | 'relates_to'
+  | 'duplicates'
+  | 'supersedes'
+  | 'replies_to'
+  | 'spawned_from';
+
+export interface TaskRelationship {
+  from_task_id: string;
+  to_task_id: string;
+  relationship_type: RelationshipType;
+  created_by: string;
+  created_at: Date;
+}
+
 export interface StatusRollup {
   draft: number;
   pending: number;
