@@ -473,12 +473,16 @@ export async function dashboard(): Promise<void> {
         ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
         : '';
       pipelineBox.setLabel(` Task Pipeline${hiddenLabel} `);
+      const legendLine = `{grey-fg}Legend:{/grey-fg} {green-fg}✓{/green-fg} done  {yellow-fg}▶{/yellow-fg} running  {cyan-fg}○{/cyan-fg} eligible  {grey-fg}…{/grey-fg} pending  {red-fg}✗{/red-fg} failed  {grey-fg}□{/grey-fg} draft`;
       if (treeLines.length === 0) {
-        pipelineBox.setItems([hiddenCount > 0
-          ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
-          : '{grey-fg}No tasks{/grey-fg}']);
+        pipelineBox.setItems([
+          legendLine,
+          hiddenCount > 0
+            ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
+            : '{grey-fg}No tasks{/grey-fg}',
+        ]);
       } else {
-        pipelineBox.setItems(treeLines);
+        pipelineBox.setItems([legendLine, ...treeLines]);
       }
 
       // Auto-select first worker's log if none selected
