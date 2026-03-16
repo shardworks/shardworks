@@ -7,7 +7,7 @@ import {
   type StreamEvent,
 } from './log.js';
 import { createReadStream, statSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { RowDataPacket } from 'mysql2/promise';
@@ -43,6 +43,7 @@ interface ActiveWorker {
   taskId: string;
   description: string;
   claimedAt: Date | null;
+  role: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,18 +210,40 @@ export async function dashboard(): Promise<void> {
     }
   }
 
+  /** Read the conductor state file and build a taskId→role map. */
+  async function conductorRoleMap(): Promise<Map<string, string>> {
+    const workDir = process.env['WORK_DIR'] ?? process.cwd();
+    const statePath = join(workDir, 'data', 'conductor-state.json');
+    try {
+      const raw = await readFile(statePath, 'utf8');
+      const state = JSON.parse(raw) as {
+        activeWorkers?: Array<{ taskId: string | null; role: string }>;
+      };
+      const map = new Map<string, string>();
+      for (const w of state.activeWorkers ?? []) {
+        if (w.taskId) map.set(w.taskId, w.role);
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
+  }
+
   async function fetchActiveWorkers(): Promise<ActiveWorker[]> {
     try {
       const [rows] = await pool.execute<TaskRow[]>(
-        `SELECT id, description, claimed_by, claimed_at FROM tasks
+        `SELECT id, description, claimed_by, claimed_at, assigned_role FROM tasks
          WHERE status = 'in_progress' AND claimed_by IS NOT NULL
          ORDER BY claimed_at DESC`,
       );
+      // Build conductor role map for tasks whose assigned_role is null
+      const roleMap = await conductorRoleMap();
       return rows.map(r => ({
         agentId: r.claimed_by!,
         taskId: r.id,
         description: r.description,
         claimedAt: r.claimed_at,
+        role: r.assigned_role ?? roleMap.get(r.id) ?? null,
       }));
     } catch {
       return [];
@@ -330,18 +353,30 @@ export async function dashboard(): Promise<void> {
     fleetBox.setContent(lines.join('\n'));
   }
 
+  function roleTag(role: string | null): string {
+    switch (role) {
+      case 'implementer': return '{green-fg}impl{/green-fg}';
+      case 'refiner':     return '{yellow-fg}rfnr{/yellow-fg}';
+      case 'planner':     return '{cyan-fg}plnr{/cyan-fg}';
+      case 'tq-writer':   return '{grey-fg}writ{/grey-fg}';
+      case 'tq-reader':   return '{grey-fg}read{/grey-fg}';
+      default:            return role ? `{grey-fg}${role.slice(0, 4)}{/grey-fg}` : '{grey-fg}  ? {/grey-fg}';
+    }
+  }
+
   function renderWorkersList(workers: ActiveWorker[]): void {
     if (workers.length === 0) {
       workersList.setItems(['{grey-fg}No active workers{/grey-fg}']);
       return;
     }
-    const items = workers.map((w, i) => {
+    const items = workers.map((_w, i) => {
+      const w = workers[i]!;
       const elapsed = w.claimedAt ? elapsedStr(w.claimedAt) : '?';
       const shortId = w.agentId.slice(0, 8);
       const desc = w.description.length > 30
         ? w.description.slice(0, 27) + '...'
         : w.description;
-      return `${shortId} │ ${w.taskId} │ ${desc} │ ${elapsed}`;
+      return `${shortId} │ ${roleTag(w.role)} │ ${w.taskId} │ ${desc} │ ${elapsed}`;
     });
     workersList.setItems(items);
     if (selectedWorkerIdx >= workers.length) {
