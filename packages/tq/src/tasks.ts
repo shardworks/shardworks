@@ -510,10 +510,12 @@ export async function claim(agentId: string, draft = false, role?: string): Prom
     ? 'priority DESC, created_at ASC'
     : 'priority DESC, eligible_at ASC';
 
-  // Role filter: if a role is specified, match tasks with that assigned_role OR no assigned_role.
-  // If no role is specified, only match tasks with no assigned_role (backward-compatible).
+  // Role filter:
+  // - role specified → only claim tasks with assigned_role = ? (exact match, no NULL fallback)
+  //   This prevents e.g. a planner agent from hijacking NULL-assigned implementer tasks.
+  // - no role specified → only claim tasks with assigned_role IS NULL (implementer default)
   const roleCondition = role
-    ? '(assigned_role IS NULL OR assigned_role = ?)'
+    ? 'assigned_role = ?'
     : 'assigned_role IS NULL';
   const roleParams = role ? [role] : [];
 
