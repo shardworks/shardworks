@@ -38,7 +38,7 @@ export interface TaskCounts {
   inProgress: number;
   /** Tasks in draft state, waiting to be refined. */
   draft: number;
-  /** Tasks ready to be claimed by implementers (assigned_role IS NULL or 'implementer'). */
+  /** Total eligible tasks across all roles. */
   eligible: number;
   /** Tasks waiting on dependencies. */
   pending: number;
@@ -48,7 +48,7 @@ export interface TaskCounts {
   failed: number;
   /** Highest priority among draft tasks (0 if none). Used for priority-aware scheduling. */
   maxDraftPriority: number;
-  /** Highest priority among non-planner eligible tasks (0 if none). Used for priority-aware scheduling. */
+  /** Highest priority among eligible tasks (0 if none). Used for priority-aware scheduling. */
   maxEligiblePriority: number;
   /**
    * Number of non-planner eligible tasks that are parent containers with at least
@@ -57,6 +57,12 @@ export interface TaskCounts {
    * over a wasted implementer slot.
    */
   eligibleBlockedByChildren: number;
+  /**
+   * Eligible task counts broken down by assigned_role.
+   * Key '' (empty string) represents tasks with assigned_role IS NULL (unassigned → implementer).
+   * e.g. { '': 3, 'evaluator': 5, 'planner': 1 }
+   */
+  eligibleByRole: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +92,7 @@ export async function queryCounts(): Promise<TaskCounts> {
     maxDraftPriority: 0,
     maxEligiblePriority: 0,
     eligibleBlockedByChildren: 0,
+    eligibleByRole: {},
   };
 
   for (const row of rows) {
@@ -99,10 +106,14 @@ export async function queryCounts(): Promise<TaskCounts> {
         counts.draft += n;
         if (maxP > counts.maxDraftPriority) counts.maxDraftPriority = maxP;
         break;
-      case 'eligible':
+      case 'eligible': {
         counts.eligible += n;
         if (maxP > counts.maxEligiblePriority) counts.maxEligiblePriority = maxP;
+        // Track per-role breakdown; use '' for tasks with no assigned_role (NULL)
+        const roleKey = (row['assigned_role'] as string | null) ?? '';
+        counts.eligibleByRole[roleKey] = (counts.eligibleByRole[roleKey] ?? 0) + n;
         break;
+      }
       case 'pending':
         counts.pending += n;
         break;

@@ -208,6 +208,14 @@ async function tick(
   // 3. Fill available worker slots (skip when at capacity or rate limited)
   // ------------------------------------------------------------------
 
+  // Load known roles once per tick (used by decideNextAction and autoDetectRole).
+  let knownRoles: Set<string>;
+  try {
+    knownRoles = await loadKnownRoles(cfg.workDir);
+  } catch {
+    knownRoles = new Set(['implementer', 'refiner']);
+  }
+
   if (!atCapacity) {
     // Respect rate-limit hold-off from worker signals.
     let rateLimitActive = false;
@@ -230,7 +238,7 @@ async function tick(
       let spawnedThisTick = 0;
 
       for (let i = 0; i < slots; i++) {
-        const action = decideNextAction(counts, spawnedThisTick);
+        const action = decideNextAction(counts, spawnedThisTick, knownRoles);
 
         if (!action) {
           state.lastNoWorkAt = new Date().toISOString();
@@ -247,10 +255,18 @@ async function tick(
           if (spawned) {
             state.stats.workersSpawned++;
             spawnedThisTick++;
-            // Optimistically increment so next slot decision is accurate
+            // Optimistically update counts so next slot decision is accurate.
             counts.inProgress++;
-            if (action === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
-            if (action === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+            if (action === 'refiner') {
+              counts.draft = Math.max(0, counts.draft - 1);
+            } else {
+              counts.eligible = Math.max(0, counts.eligible - 1);
+              // Decrement the role-specific bucket too ('' for implementer/unassigned).
+              const roleKey = action === 'implementer' ? '' : action;
+              if (counts.eligibleByRole[roleKey] !== undefined) {
+                counts.eligibleByRole[roleKey] = Math.max(0, counts.eligibleByRole[roleKey] - 1);
+              }
+            }
           }
         } catch (err) {
           log('error', `Failed to spawn ${action} worker`, { error: String(err) });
@@ -265,7 +281,7 @@ async function tick(
   // 4. Handle operator-initiated spawn requests — bypass maxWorkers cap
   // ------------------------------------------------------------------
   for (const req of pendingSpawnRequests) {
-    const role = req.role ?? autoDetectRole(counts);
+    const role = req.role ?? autoDetectRole(counts, knownRoles);
     if (!role) {
       log('warn', 'spawn_request: no eligible tasks to spawn for', {
         requested_by: req.requested_by,
@@ -279,12 +295,19 @@ async function tick(
       task_id: req.task_id ?? null,
     });
     try {
-      const spawned = await doSpawn(cfg, state, log, role as 'implementer' | 'refiner', counts);
+      const spawned = await doSpawn(cfg, state, log, role, counts);
       if (spawned) {
         state.stats.workersSpawned++;
         counts.inProgress++;
-        if (role === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
-        if (role === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
+        if (role === 'refiner') {
+          counts.draft = Math.max(0, counts.draft - 1);
+        } else {
+          counts.eligible = Math.max(0, counts.eligible - 1);
+          const roleKey = role === 'implementer' ? '' : role;
+          if (counts.eligibleByRole[roleKey] !== undefined) {
+            counts.eligibleByRole[roleKey] = Math.max(0, counts.eligibleByRole[roleKey] - 1);
+          }
+        }
       }
     } catch (err) {
       log('error', `spawn_request: failed to spawn ${role} worker`, { error: String(err) });
@@ -297,37 +320,78 @@ async function tick(
 // ---------------------------------------------------------------------------
 
 /**
- * Decide what kind of worker to spawn next, given current task counts.
+ * Load the set of known role IDs from roles.json in workDir.
+ * Falls back to a hard-coded default set if the file is missing or unreadable.
+ */
+async function loadKnownRoles(workDir: string): Promise<Set<string>> {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const raw = await readFile(join(workDir, 'roles.json'), 'utf8');
+    const config = JSON.parse(raw) as { roles: Array<{ id: string }> };
+    return new Set(config.roles.map((r) => r.id));
+  } catch {
+    // Fallback: built-in roles if roles.json is not readable
+    return new Set(['implementer', 'refiner', 'planner', 'tq-reader', 'tq-writer']);
+  }
+}
+
+/**
+ * Decide what role of worker to spawn next, given current task counts.
  *
  * Priority order:
  *   1. Priority-aware draft vs eligible comparison — when both draft and
  *      eligible tasks exist, compare their highest priorities so that a
  *      high-priority draft is refined before a lower-priority eligible task
  *      is started.  If the top draft priority >= top eligible priority,
- *      spawn a refiner; otherwise spawn an implementer.
- *   2. Implementer — if there are directly implementable eligible tasks.
- *   3. Refiner — if there are draft tasks (including children of eligible
- *      parent containers).  Limited to one per tick to avoid races where
- *      two refiners claim the same draft.
+ *      spawn a refiner; otherwise spawn a worker for the first eligible role.
+ *   2. Role-specific eligible tasks — any assigned_role present in roles.json
+ *      gets a matching worker spawned.  assigned_role=null tasks spawn an
+ *      implementer (backward compat).  Roles not in roles.json (e.g. 'human')
+ *      are skipped.
+ *   3. Refiner — if there are draft tasks.  Limited to one per tick to avoid
+ *      races where two refiners claim the same draft.
  *   4. null — nothing to do, notify humans.
  *
- * "Implementable" eligible tasks exclude parent containers whose children are
- * all in draft state (not yet refined).  Those parents need a refiner first;
- * an implementer spawned for them would release and exit immediately.
+ * "Implementable" unassigned eligible tasks exclude parent containers whose
+ * children are all in draft state (not yet refined).
  */
 function decideNextAction(
   counts: TaskCounts,
   spawnedThisTick: number,
-): 'implementer' | 'refiner' | null {
-  const implementableEligible = Math.max(0, counts.eligible - counts.eligibleBlockedByChildren);
+  knownRoles: Set<string>,
+): string | null {
   const canRefine = counts.draft > 0 && spawnedThisTick === 0;
 
-  // Both directly-implementable and draft tasks exist — pick based on top priority
-  if (canRefine && implementableEligible > 0) {
-    return counts.maxDraftPriority >= counts.maxEligiblePriority ? 'refiner' : 'implementer';
+  // Build the list of (spawnRole, count) pairs for roles that have eligible tasks
+  // and a corresponding worker role definition.
+  const spawnableRoles: Array<{ spawnRole: string; count: number }> = [];
+  for (const [assignedRole, count] of Object.entries(counts.eligibleByRole)) {
+    if (count <= 0) continue;
+    if (assignedRole === '') {
+      // Unassigned eligible tasks → spawn implementer.
+      // Subtract parent containers whose children are all in draft (would be wasted).
+      const implementable = Math.max(0, count - counts.eligibleBlockedByChildren);
+      if (implementable > 0) {
+        spawnableRoles.push({ spawnRole: 'implementer', count: implementable });
+      }
+    } else if (knownRoles.has(assignedRole)) {
+      // Role-specific eligible tasks → spawn a worker with that role.
+      spawnableRoles.push({ spawnRole: assignedRole, count });
+    }
+    // else: assignedRole not in roles.json (e.g. 'human') — no worker to spawn.
   }
 
-  if (implementableEligible > 0) return 'implementer';
+  const hasEligibleWork = spawnableRoles.length > 0;
+
+  // Priority-aware: when both draft and eligible work exist, compare top priorities.
+  if (canRefine && hasEligibleWork) {
+    return counts.maxDraftPriority >= counts.maxEligiblePriority
+      ? 'refiner'
+      : spawnableRoles[0].spawnRole;
+  }
+
+  if (hasEligibleWork) return spawnableRoles[0].spawnRole;
   if (canRefine) return 'refiner';
 
   return null;
@@ -341,7 +405,7 @@ async function doSpawn(
   cfg: ConductorConfig,
   state: ConductorState,
   log: LogFn,
-  action: 'implementer' | 'refiner',
+  action: string,
   _counts: TaskCounts,
 ): Promise<SpawnedWorker | null> {
   const spawned = spawnWorker(cfg.workDir, action);
@@ -366,12 +430,27 @@ async function doSpawn(
  * Uses the same priority logic as decideNextAction but ignores the
  * spawnedThisTick limit (since this is an explicit operator request).
  */
-function autoDetectRole(counts: TaskCounts): 'implementer' | 'refiner' | null {
-  const implementableEligible = Math.max(0, counts.eligible - counts.eligibleBlockedByChildren);
-  if (implementableEligible > 0 && counts.draft > 0) {
-    return counts.maxDraftPriority >= counts.maxEligiblePriority ? 'refiner' : 'implementer';
+function autoDetectRole(counts: TaskCounts, knownRoles: Set<string>): string | null {
+  // Same spawnable-role collection as decideNextAction
+  const spawnableRoles: Array<{ spawnRole: string; count: number }> = [];
+  for (const [assignedRole, count] of Object.entries(counts.eligibleByRole)) {
+    if (count <= 0) continue;
+    if (assignedRole === '') {
+      const implementable = Math.max(0, count - counts.eligibleBlockedByChildren);
+      if (implementable > 0) spawnableRoles.push({ spawnRole: 'implementer', count: implementable });
+    } else if (knownRoles.has(assignedRole)) {
+      spawnableRoles.push({ spawnRole: assignedRole, count });
+    }
   }
-  if (implementableEligible > 0) return 'implementer';
+
+  const hasEligibleWork = spawnableRoles.length > 0;
+
+  if (hasEligibleWork && counts.draft > 0) {
+    return counts.maxDraftPriority >= counts.maxEligiblePriority
+      ? 'refiner'
+      : spawnableRoles[0].spawnRole;
+  }
+  if (hasEligibleWork) return spawnableRoles[0].spawnRole;
   if (counts.draft > 0) return 'refiner';
   return null;
 }
