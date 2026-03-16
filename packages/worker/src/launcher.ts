@@ -50,6 +50,7 @@ function buildArgs(config: ConductedConfig): string[] {
 
   const args: string[] = [
     '-p',
+    '--verbose',
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
     '--model', config.claudeModel,

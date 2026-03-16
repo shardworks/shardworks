@@ -10,6 +10,7 @@ import {
   getTask,
   listTasks,
   claim,
+  claimById,
   complete,
   fail,
   publish,
@@ -127,6 +128,17 @@ program
   .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
   .action(async (opts: { agent: string; draft?: boolean }) => {
     await run(() => claim(opts.agent, opts.draft ?? false));
+  });
+
+// ── tq claim-id ─────────────────────────────────────────────────────────────
+
+program
+  .command('claim-id <task-id>')
+  .description('Claim a specific task by ID (must be eligible, or draft if --draft is passed)')
+  .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
+  .option('--draft', 'Also allow claiming draft tasks')
+  .action(async (taskId: string, opts: { agent: string; draft?: boolean }) => {
+    await run(() => claimById(taskId, opts.agent, opts.draft ?? false));
   });
 
 // ── tq complete ─────────────────────────────────────────────────────────────

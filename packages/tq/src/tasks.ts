@@ -486,6 +486,40 @@ export async function claim(agentId: string, draft = false): Promise<ClaimResult
 }
 
 // ---------------------------------------------------------------------------
+// T09b — Claim by ID
+// ---------------------------------------------------------------------------
+
+export async function claimById(taskId: string, agentId: string, draft = false): Promise<ClaimResult> {
+  const allowedStatuses = draft ? ['eligible', 'draft'] : ['eligible'];
+  return withCommit(`[claim-id] ${taskId} by ${agentId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+
+    const row = rows[0]!;
+    if (!allowedStatuses.includes(row.status)) {
+      throw new Error(
+        `Task ${taskId} cannot be claimed: status is '${row.status}' (expected ${allowedStatuses.join(' or ')})`,
+      );
+    }
+
+    const now = new Date();
+    await conn.execute(
+      `UPDATE tasks SET status = 'in_progress', claimed_by = ?, claimed_at = ? WHERE id = ?`,
+      [agentId, now, row.id],
+    );
+
+    const depsMap = await attachDeps(conn, [row.id]);
+    return {
+      task: rowToTask({ ...row, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(row.id) ?? []),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // T10 — Complete
 // ---------------------------------------------------------------------------
 
