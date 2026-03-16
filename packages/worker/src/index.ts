@@ -1,9 +1,39 @@
 #!/usr/bin/env node
 import { parseConfig } from './config.js';
 import { loadRole } from './roles.js';
-import { claimTask } from './claim.js';
+import { claimTask, claimTaskById, releaseTask } from './claim.js';
 import { launch } from './launcher.js';
 import type { ConductedConfig } from './config.js';
+import type { LaunchResult } from './launcher.js';
+
+// ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+
+/** sysexits.h EX_TEMPFAIL — temporary failure, retry later */
+const EX_TEMPFAIL = 75;
+
+// ---------------------------------------------------------------------------
+// Structured exit status (written to stderr before exit)
+// ---------------------------------------------------------------------------
+
+interface ExitStatus {
+  status: 'completed' | 'failed' | 'rate_limited' | 'crashed';
+  task_id: string;
+  agent_id: string;
+  session_id: string | null;
+  cost_usd: number;
+  retry_after?: string | null;
+  error?: string;
+}
+
+function writeExitStatus(status: ExitStatus): void {
+  process.stderr.write('\n' + JSON.stringify(status) + '\n');
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const config = parseConfig();
@@ -14,6 +44,8 @@ async function main(): Promise<void> {
   let conducted: ConductedConfig;
 
   if (config.mode === 'conducted') {
+    // Conducted mode: claim the specific task by ID with our ephemeral agent ID
+    await claimTaskById(config.agentId, config.workDir, config.taskId);
     conducted = config;
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
@@ -33,17 +65,53 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify(meta) + '\n');
 
   // Signal to the orchestrator that all metadata has been emitted and it can detach.
-  // Closing stdout causes any pipe reader (the orchestrator) to get EOF.
-  // In interactive mode we keep stderr open for formatted output, but stdout is done.
-  // Use end() + destroy() to fully close the fd so the orchestrator sees EOF even
-  // if it hasn't closed its end of the pipe yet.
   await new Promise<void>(resolve => process.stdout.end(resolve));
 
-  // Now run until Claude finishes. In interactive mode, formatted output continues
-  // on stderr. In non-interactive mode, the process is silent — only the log file
-  // captures output.
-  const { exitCode } = await handle.done;
-  process.exit(exitCode);
+  // Now run until Claude finishes.
+  const launchResult: LaunchResult = await handle.done;
+
+  // Rate-limit detection: release the task and exit EX_TEMPFAIL
+  if (launchResult.result?.isRateLimit) {
+    try {
+      await releaseTask(conducted.agentId, conducted.workDir, conducted.taskId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`worker: failed to release task: ${msg}\n`);
+    }
+
+    writeExitStatus({
+      status: 'rate_limited',
+      task_id: conducted.taskId,
+      agent_id: conducted.agentId,
+      session_id: launchResult.sessionId,
+      cost_usd: launchResult.result.costUsd,
+      retry_after: launchResult.result.retryAfter,
+    });
+
+    process.exit(EX_TEMPFAIL);
+  }
+
+  // Normal exit: determine status from result info and exit code
+  if (launchResult.exitCode === 0) {
+    writeExitStatus({
+      status: launchResult.result?.isError ? 'failed' : 'completed',
+      task_id: conducted.taskId,
+      agent_id: conducted.agentId,
+      session_id: launchResult.sessionId,
+      cost_usd: launchResult.result?.costUsd ?? 0,
+    });
+  } else {
+    writeExitStatus({
+      status: 'crashed',
+      task_id: conducted.taskId,
+      agent_id: conducted.agentId,
+      session_id: launchResult.sessionId,
+      cost_usd: launchResult.result?.costUsd ?? 0,
+      error: `claude exited with code ${launchResult.exitCode}`,
+    });
+  }
+
+  process.exit(launchResult.exitCode);
 }
 
 main().catch((err: unknown) => {
@@ -51,3 +119,4 @@ main().catch((err: unknown) => {
   process.stderr.write(`worker: ${message}\n`);
   process.exit(1);
 });
+

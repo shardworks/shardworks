@@ -46,6 +46,10 @@ tq complete <id> --agent <agent-id> -r '<json>'
 
 # Mark a task failed with a reason
 tq fail <id> --agent <agent-id> --reason '<text>'
+
+# Release an in_progress task back to eligible (for retry after interruption)
+tq release <id> --agent <agent-id>
+tq release <id> --force          # operator override, skip agent check
 ```
 
 The `--agent` value must match the `claimed_by` field set during `tq claim`.
@@ -89,13 +93,14 @@ tq batch <file> --ready  # skip draft for all tasks in the batch
 ```
 draft → (task-refiner claims) → in_progress → (publish) → pending → eligible → in_progress → completed
                                                                    ↗                        → failed
-                                            → (publish, no deps)  → eligible
+                                            → (publish, no deps)  → eligible    ↖ (release)
 ```
 
 New tasks start as `draft` unless `--ready` is passed.
 `tq claim --draft` transitions `draft` → `in_progress` (for task-refiners only).
 `tq publish` transitions `in_progress` → `eligible` or `pending` (based on deps).
 `tq claim` transitions `eligible` → `in_progress` (for regular workers).
+`tq release` transitions `in_progress` → `eligible` (for interrupted workers).
 When all dependencies of a `pending` task complete, it becomes `eligible`.
 
 ### Planner commands (cross-task refinement)
@@ -140,9 +145,11 @@ Each role specifies:
 - `systemPrompt` / `workPrompt` — arrays of lines, joined with `\n`
 
 **Template variables** available in prompts:
-- `{{agentId}}` — the agent's ID
+- `{{agentId}}` — the agent's ID (ephemeral, generated fresh each run)
 - `{{taskId}}` — the task being worked on
 - `{{tagsLine}}` — `\nCapability tags: foo, bar` or empty string
+- `{{logPath}}` — relative path to the task's JSONL work log
+- `{{priorWorkNotice}}` — context recovery notice (non-empty if prior log exists)
 
 **Built-in roles:**
 
@@ -158,8 +165,13 @@ Each role specifies:
 worker --role implementer      # one-shot implementer (default)
 worker --role refiner          # one-shot refiner
 worker --role planner          # one-shot planner (claims planner-assigned task)
+worker --task-id <id>          # conducted mode: claim a specific task
 WORKER_ROLE=planner worker     # via env var
 ```
+
+Agent IDs are always ephemeral (randomUUID on each run). There is no
+`--agent-id` or `--resume-session` flag — context recovery is handled
+via the task-centric work log and git worktree.
 
 Override the roles file location with `ROLES_CONFIG=/path/to/roles.json`.
 
@@ -170,11 +182,16 @@ On startup, the worker emits a single JSON metadata line to **stdout**, then
 staying connected for the lifetime of the run.
 
 ```json
-{"agent_id":"...","task_id":"...","role":"implementer","session_id":"...","log_path":"data/work-logs/.../....jsonl","pid":12345}
+{"agent_id":"...","task_id":"...","role":"implementer","session_id":"...","log_path":"data/work-logs/tq-xxxx.jsonl","pid":12345}
 ```
 
-The `session_id` is needed for `--resume-session` on subsequent invocations.
-The `log_path` points to the JSONL stream-json capture.
+The `log_path` points to the JSONL stream-json capture (keyed by task ID).
+
+**Exit codes:**
+- `0` — task completed or failed by the agent
+- `75` — rate limited (task was released back to eligible, retry later)
+- `1` — config error or spawn failure
+- Other — unexpected crash
 
 **Interactive mode**: When stderr is a TTY (or `--interactive` is passed),
 the worker streams human-readable Claude output to stderr — thinking, text,
@@ -210,5 +227,7 @@ Keyboard: `Tab` switch panel, `↑↓` navigate, `r` refresh, `q` quit.
 
 ### Work logs
 
-Worker invocations are captured to `data/work-logs/<worker-id>/<task-id>.jsonl`
+Worker invocations are captured to `data/work-logs/<task-id>.jsonl`
 as stream-json output from Claude. Each line is a JSON event.
+Logs are append-only — retries on the same task append to the same file,
+giving a complete timeline of all attempts.

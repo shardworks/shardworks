@@ -21,12 +21,11 @@
         "by other agents that depend on this task."
       ],
       "workPrompt": [
-        "Work on task {{taskId}}.",
+        "Work on task {{taskId}}.{{priorWorkNotice}}",
         "",
-        "Check the task with `tq show {{taskId}}`. If the task is in_progress and you have",
-        "prior conversation history for it, continue from where you left off.",
-        "If this is a fresh start, read the description and payload, fetch dependency",
-        "results with `tq dep-results {{taskId}}`, then do the work.",
+        "Check the task with `tq show {{taskId}}`. If this is a fresh start, read the",
+        "description and payload, fetch dependency results with `tq dep-results {{taskId}}`,",
+        "then do the work.",
         "",
         "When done, use /tq-complete with a detailed JSON result summarising what you",
         "did, what changed, and any follow-up notes. If you cannot complete the task,",
@@ -52,7 +51,7 @@
         "Tasks without an assigned role will be claimed by any eligible worker."
       ],
       "workPrompt": [
-        "Refine draft task {{taskId}}.",
+        "Refine draft task {{taskId}}.{{priorWorkNotice}}",
         "",
         "1. Run `tq show {{taskId}}` to read the description and payload.",
         "2. Analyse what the task requires. Consider:",
@@ -105,7 +104,7 @@
         "This is the permanent record of your planning work."
       ],
       "workPrompt": [
-        "Work on planning task {{taskId}}.",
+        "Work on planning task {{taskId}}.{{priorWorkNotice}}",
         "",
         "Run `tq show {{taskId}}` to see the task description and payload for guidance.",
         "Then run `tq list` to get all tasks. Study the full picture.",

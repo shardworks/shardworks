@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 
 /** Base directory for work logs. */
@@ -6,7 +7,18 @@ export function workLogsDir(): string {
   return process.env['WORK_LOGS_DIR'] ?? join(process.cwd(), 'data', 'work-logs');
 }
 
-/** Return the log file path for a specific worker + task. */
+/**
+ * Return the log file path for a task.
+ * New layout: data/work-logs/<task-id>.jsonl (flat, keyed by task ID).
+ */
+export function taskLogPath(taskId: string): string {
+  return join(workLogsDir(), `${taskId}.jsonl`);
+}
+
+/**
+ * Return the log file path for a specific worker + task.
+ * @deprecated Use taskLogPath() — this is the old nested layout for backward compat.
+ */
 export function logFilePath(workerId: string, taskId: string): string {
   return join(workLogsDir(), workerId, `${taskId}.jsonl`);
 }
@@ -32,7 +44,18 @@ export async function workerLogFiles(workerId: string): Promise<string[]> {
   }
 }
 
-/** List all worker IDs that have log directories. */
+/**
+ * Resolve a task ID to its log file path.
+ * Checks the new flat layout first, then falls back to searching nested dirs.
+ */
+export function resolveTaskLog(taskId: string): string | null {
+  // New layout: data/work-logs/<task-id>.jsonl
+  const flat = taskLogPath(taskId);
+  if (existsSync(flat)) return flat;
+  return null;
+}
+
+/** List all worker IDs that have log directories (legacy layout). */
 export async function listWorkerIds(): Promise<string[]> {
   const base = workLogsDir();
   try {

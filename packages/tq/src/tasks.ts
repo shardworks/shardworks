@@ -534,6 +534,46 @@ export async function claimById(taskId: string, agentId: string, draft = false):
 }
 
 // ---------------------------------------------------------------------------
+// T09c — Release (return in_progress → eligible)
+// ---------------------------------------------------------------------------
+
+/**
+ * Release a claimed task back to `eligible` so another worker can pick it up.
+ * Used when a worker is interrupted (rate limit, crash recovery, etc.) and
+ * wants to relinquish the task without failing it.
+ *
+ * @param force — if true, skip the agent-ownership check (for operators/reapers)
+ */
+export async function release(taskId: string, agentId: string, force = false): Promise<Task> {
+  return withCommit(`[release] ${taskId} by ${agentId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = rows[0]!;
+    if (row.status !== 'in_progress') {
+      throw new Error(`Task ${taskId} is not in_progress (status: ${row.status})`);
+    }
+    if (!force && row.claimed_by !== agentId) {
+      throw new Error(`Task ${taskId} is not claimed by ${agentId} (claimed by ${row.claimed_by})`);
+    }
+
+    const now = new Date();
+    await conn.execute(
+      `UPDATE tasks SET status = 'eligible', eligible_at = ?, claimed_by = NULL, claimed_at = NULL WHERE id = ?`,
+      [now, taskId],
+    );
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      { ...row, status: 'eligible', eligible_at: now, claimed_by: null, claimed_at: null },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // T10 — Complete
 // ---------------------------------------------------------------------------
 

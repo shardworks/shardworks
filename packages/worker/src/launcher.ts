@@ -38,9 +38,25 @@ export interface WorkerMetadata {
   pid: number;
 }
 
+/** Captured from the final "result" event in Claude's stream-json output. */
+export interface ResultInfo {
+  /** Whether the result event had is_error=true. */
+  isError: boolean;
+  /** The result text (e.g. error message or summary). */
+  resultText: string;
+  /** Total cost in USD from the result event. */
+  costUsd: number;
+  /** True if the result looks like a rate limit. */
+  isRateLimit: boolean;
+  /** ISO timestamp when the rate limit resets, if parseable. */
+  retryAfter: string | null;
+}
+
 export interface LaunchResult {
   exitCode: number;
   sessionId: string | null;
+  /** Info from the final "result" event, or null if Claude never emitted one. */
+  result: ResultInfo | null;
 }
 
 /** Returned by launch() so the caller can await metadata early and done later. */
@@ -49,6 +65,60 @@ export interface LaunchHandle {
   metadata: Promise<WorkerMetadata>;
   /** Resolves when Claude exits. */
   done: Promise<LaunchResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit detection
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_PATTERNS = [
+  /hit your limit/i,
+  /rate.limit/i,
+  /resets \d/i,
+  /too many requests/i,
+];
+
+function detectRateLimit(event: StreamEvent): boolean {
+  if (!event.is_error) return false;
+  if ((event.total_cost_usd ?? 0) > 0) return false;
+  const text = event.result ?? '';
+  return RATE_LIMIT_PATTERNS.some(p => p.test(text));
+}
+
+/**
+ * Try to parse a "resets <time>" from a rate-limit message.
+ * Returns an ISO timestamp or null.
+ */
+function parseRetryAfter(message: string): string | null {
+  // Match patterns like "resets 5pm (UTC)" or "resets 17:00 (UTC)"
+  const match = message.match(/resets\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*\((\w+)\)/i);
+  if (!match) return null;
+  try {
+    const timeStr = match[1]!.trim();
+    const tz = match[2]!;
+    // Simple parse: assume today's date with the given time
+    const now = new Date();
+    let hours: number;
+    let minutes = 0;
+    const timeParts = timeStr.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+    if (!timeParts) return null;
+    hours = parseInt(timeParts[1]!, 10);
+    if (timeParts[2]) minutes = parseInt(timeParts[2], 10);
+    if (timeParts[3]) {
+      const period = timeParts[3].toLowerCase();
+      if (period === 'pm' && hours < 12) hours += 12;
+      if (period === 'am' && hours === 12) hours = 0;
+    }
+    // Assume UTC if tz matches
+    if (tz.toUpperCase() === 'UTC') {
+      const retry = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes));
+      if (retry <= now) retry.setUTCDate(retry.getUTCDate() + 1);
+      return retry.toISOString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +135,7 @@ function workLogsDir(workDir: string): string {
 
 function buildArgs(config: ConductedConfig): string[] {
   const role = loadRole(config.role, config.workDir);
-  const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags };
+  const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags, workDir: config.workDir };
 
   const args: string[] = [
     '-p',
@@ -76,11 +146,8 @@ function buildArgs(config: ConductedConfig): string[] {
     '--system-prompt', renderSystemPrompt(role, vars),
   ];
 
-  if (config.resumeSession) {
-    args.push('--resume', config.resumeSession);
-  } else {
-    args.push('--worktree', config.agentId);
-  }
+  // Worktree is keyed by task ID — survives across agent invocations
+  args.push('--worktree', config.taskId);
 
   if (config.claudeMaxBudgetUsd !== undefined) {
     args.push('--max-budget-usd', String(config.claudeMaxBudgetUsd));
@@ -156,7 +223,9 @@ function formatEvent(event: StreamEvent): string | null {
 
 export function launch(config: ConductedConfig): LaunchHandle {
   const args = buildArgs(config);
-  const logDir = join(workLogsDir(config.workDir), config.agentId);
+
+  // Logs are keyed by task ID (not agent ID) — append across retries
+  const logDir = workLogsDir(config.workDir);
   const logPath = join(logDir, `${config.taskId}.jsonl`);
 
   let resolveMetadata: (meta: WorkerMetadata) => void;
@@ -178,6 +247,7 @@ export function launch(config: ConductedConfig): LaunchHandle {
 
     let sessionId: string | null = null;
     let metadataEmitted = false;
+    let resultInfo: ResultInfo | null = null;
 
     function emitMetadata(sid: string): void {
       if (metadataEmitted) return;
@@ -203,6 +273,18 @@ export function launch(config: ConductedConfig): LaunchHandle {
         if (event.session_id && !sessionId) {
           sessionId = event.session_id;
           emitMetadata(sessionId);
+        }
+
+        // Capture the final result event for rate-limit detection
+        if (event.type === 'result') {
+          const isRL = detectRateLimit(event);
+          resultInfo = {
+            isError: event.is_error ?? false,
+            resultText: event.result ?? '',
+            costUsd: event.total_cost_usd ?? 0,
+            isRateLimit: isRL,
+            retryAfter: isRL ? parseRetryAfter(event.result ?? '') : null,
+          };
         }
 
         // In interactive mode, format events to stderr
@@ -243,7 +325,7 @@ export function launch(config: ConductedConfig): LaunchHandle {
         if (!metadataEmitted) {
           emitMetadata('');
         }
-        resolve({ exitCode: code ?? 1, sessionId });
+        resolve({ exitCode: code ?? 1, sessionId, result: resultInfo });
       });
     });
   })();

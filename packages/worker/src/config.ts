@@ -25,18 +25,18 @@ interface BaseConfig {
 // Mode-specific shapes
 // ---------------------------------------------------------------------------
 
-/** Conductor pre-claimed a specific task and dispatched it to this worker. */
+/**
+ * Conductor pre-selected a specific task for this worker.
+ * The worker will claim it by ID on startup (agent ID is still ephemeral).
+ */
 export interface ConductedConfig extends BaseConfig {
   mode: 'conducted';
   taskId: string;
-  /** Claude session UUID from a previous invocation; enables --resume. */
-  resumeSession?: string;
 }
 
 /**
  * No conductor — the worker claims the next suitable task itself before
  * spawning Claude. Agent ID is ephemeral (generated on startup).
- * No resume across runs.
  */
 export interface OneShotConfig extends BaseConfig {
   mode: 'one-shot';
@@ -52,8 +52,6 @@ export function parseConfig(): WorkerConfig {
   const { values } = parseArgs({
     options: {
       'task-id':        { type: 'string' },
-      'agent-id':       { type: 'string' },
-      'resume-session': { type: 'string' },
       'role':           { type: 'string' },
       'interactive':    { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
@@ -62,17 +60,6 @@ export function parseConfig(): WorkerConfig {
   });
 
   const taskId  = values['task-id'];
-  const agentId = values['agent-id'];
-
-  // Validate: either both task-id and agent-id are present (conducted),
-  // or neither is (one-shot). Mixed is an error.
-  if ((taskId === undefined) !== (agentId === undefined)) {
-    throw new Error(
-      taskId === undefined
-        ? '--task-id is required when --agent-id is provided'
-        : '--agent-id is required when --task-id is provided',
-    );
-  }
 
   const role = values['role'] ?? process.env['WORKER_ROLE'] ?? 'implementer';
 
@@ -91,23 +78,23 @@ export function parseConfig(): WorkerConfig {
   const rawBudget          = process.env['CLAUDE_MAX_BUDGET_USD'];
   const claudeMaxBudgetUsd = rawBudget !== undefined ? parseFloat(rawBudget) : undefined;
 
+  // Agent ID is always ephemeral — generated fresh every invocation.
+  const agentId = randomUUID();
+
   const base: BaseConfig = {
-    agentId: '', role, interactive, agentTags, workDir, claudeModel, claudeMaxBudgetUsd,
+    agentId, role, interactive, agentTags, workDir, claudeModel, claudeMaxBudgetUsd,
   };
 
-  if (taskId !== undefined && agentId !== undefined) {
+  if (taskId !== undefined) {
     return {
       ...base,
       mode: 'conducted',
-      agentId,
       taskId,
-      resumeSession: values['resume-session'],
     };
   }
 
   return {
     ...base,
     mode: 'one-shot',
-    agentId: randomUUID(),
   };
 }

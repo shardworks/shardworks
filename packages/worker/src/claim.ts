@@ -37,3 +37,29 @@ export async function claimTask(agentId: string, workDir: string, claimDraft = f
   const result = JSON.parse(stdout.trim()) as { task: { id: string } | null };
   return result?.task?.id ?? null;
 }
+
+/**
+ * Claim a specific task by ID for an agent.
+ * Used in conducted mode where the conductor pre-selects the task.
+ */
+export async function claimTaskById(agentId: string, workDir: string, taskId: string): Promise<string> {
+  const args = ['claim-id', taskId, '--agent', agentId];
+  const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
+  if (exitCode !== 0) {
+    throw new Error(`tq claim-id failed: ${stderr.trim() || stdout.trim()}`);
+  }
+  const result = JSON.parse(stdout.trim()) as { task: { id: string } };
+  return result.task.id;
+}
+
+/**
+ * Release a claimed task back to `eligible` so another worker can pick it up.
+ * Used when the worker hits a rate limit or other transient failure.
+ */
+export async function releaseTask(agentId: string, workDir: string, taskId: string): Promise<void> {
+  const args = ['release', taskId, '--agent', agentId];
+  const { stderr, exitCode } = await exec('tq', args, workDir);
+  if (exitCode !== 0) {
+    throw new Error(`tq release failed: ${stderr.trim()}`);
+  }
+}

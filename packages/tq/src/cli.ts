@@ -13,6 +13,7 @@ import {
   claimById,
   complete,
   fail,
+  release,
   publish,
   link,
   unlink,
@@ -166,6 +167,17 @@ program
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .action(async (id: string, opts: { reason: string; agent: string }) => {
     await run(() => fail(id, opts.agent, opts.reason));
+  });
+
+// ── tq release ──────────────────────────────────────────────────────────────
+
+program
+  .command('release <id>')
+  .description('Release an in_progress task back to eligible (for retry after interruption)')
+  .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
+  .option('--force', 'Skip agent ownership check (operator override)')
+  .action(async (id: string, opts: { agent: string; force?: boolean }) => {
+    await run(() => release(id, opts.agent, opts.force ?? false));
   });
 
 // ── tq publish ──────────────────────────────────────────────────────────────

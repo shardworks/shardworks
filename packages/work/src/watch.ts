@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, watchFile, unwatchFile } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { workerLogFiles, formatEventPlain, type StreamEvent } from './log.js';
+import { workerLogFiles, resolveTaskLog, taskLogPath, formatEventPlain, type StreamEvent } from './log.js';
 
 /**
  * Tail a worker's latest log file (or a specific task log), printing
@@ -85,16 +85,16 @@ async function printLines(path: string, offset: number): Promise<void> {
 
 /**
  * Resolve an ID to a log file path.
+ * - If it looks like a task ID (tq-...), check flat layout first, then nested.
  * - If it looks like a worker UUID, find the latest log in that worker's dir.
- * - If it looks like a task ID (tq-...), search all worker dirs.
  */
 async function resolveLogPath(id: string): Promise<string | null> {
-  // Try as worker ID first — find latest log
-  const workerFiles = await workerLogFiles(id);
-  if (workerFiles.length > 0) return workerFiles[0]!;
-
-  // Try as task ID — search all workers for a matching file
+  // Try as task ID first — new flat layout: data/work-logs/<task-id>.jsonl
   if (id.startsWith('tq-')) {
+    const flat = resolveTaskLog(id);
+    if (flat) return flat;
+
+    // Fall back to nested layout: search all worker dirs
     const { readdir } = await import('node:fs/promises');
     const { join } = await import('node:path');
     const { workLogsDir } = await import('./log.js');
@@ -109,7 +109,14 @@ async function resolveLogPath(id: string): Promise<string | null> {
     } catch {
       // logs dir doesn't exist
     }
+
+    // Task log path for watching (may not exist yet)
+    return taskLogPath(id);
   }
+
+  // Try as worker ID — find latest log in that worker's dir (legacy layout)
+  const workerFiles = await workerLogFiles(id);
+  if (workerFiles.length > 0) return workerFiles[0]!;
 
   return null;
 }
