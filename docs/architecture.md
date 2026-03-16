@@ -441,6 +441,5 @@ Stdout closes immediately after this line. The conductor reads it and detaches.
 
 ### Future
 
-- `tq reap` — stale task reaper for orphaned tasks
 - Agentic conductor — automated dispatch with rate-limit tracking
 - Cost tracking — aggregate cost_usd across task attempts

@@ -22,6 +22,7 @@ import {
   cancel,
   subtree,
   ready,
+  reap,
   getDepResults,
   type ListFilters,
 } from './tasks.js';
@@ -311,6 +312,33 @@ program
   .description('Show the result_payload of each dependency of a task')
   .action(async (id: string) => {
     await run(() => getDepResults(id));
+  });
+
+// ── tq reap ─────────────────────────────────────────────────────────────────
+
+/**
+ * Parse a human-friendly duration string like "30m", "2h", "1d" into
+ * milliseconds. Supports: s (seconds), m (minutes), h (hours), d (days).
+ */
+function parseDuration(input: string): number {
+  const match = input.match(/^(\d+(?:\.\d+)?)\s*([smhd])$/i);
+  if (!match) throw new Error(`Invalid duration "${input}". Use e.g. 30m, 2h, 1d.`);
+  const value = parseFloat(match[1]!);
+  const unit = match[2]!.toLowerCase();
+  const multipliers: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return value * multipliers[unit]!;
+}
+
+program
+  .command('reap')
+  .description('Find (and optionally release) stale in_progress tasks')
+  .requiredOption('--stale-after <duration>', 'Duration threshold (e.g. 30m, 2h, 1d)')
+  .option('--release', 'Release stale tasks back to eligible (default: dry-run list only)')
+  .action(async (opts: { staleAfter: string; release?: boolean }) => {
+    await run(async () => {
+      const ms = parseDuration(opts.staleAfter);
+      return reap(ms, opts.release ?? false);
+    });
   });
 
 program.parse();

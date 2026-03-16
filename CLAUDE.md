@@ -55,6 +55,18 @@ tq release <id> --force          # operator override, skip agent check
 The `--agent` value must match the `claimed_by` field set during `tq claim`.
 Use `-r` or `--result` for the result payload on `tq complete`.
 
+### Reap stale tasks
+
+```bash
+# List in_progress tasks that have been claimed longer than the threshold (dry run)
+tq reap --stale-after 30m
+
+# Release stale tasks back to eligible
+tq reap --stale-after 30m --release
+```
+
+Duration supports: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+
 ### Task-refiner agent
 
 Draft tasks are claimed and refined by special task-refiner agents. After refining

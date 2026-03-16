@@ -999,3 +999,70 @@ export async function ready(): Promise<Task[]> {
     conn.release();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Reap — find and optionally release stale in_progress tasks
+// ---------------------------------------------------------------------------
+
+export interface ReapResult {
+  /** Tasks that are stale (in_progress longer than the threshold). */
+  stale: Task[];
+  /** Tasks that were released (only populated when doRelease=true). */
+  released: Task[];
+}
+
+/**
+ * Find in_progress tasks whose claimed_at is older than `staleAfterMs`.
+ * If `doRelease` is true, release them all back to eligible.
+ * This is the safety net for orphaned tasks whose workers crashed or
+ * whose conductor died.
+ */
+export async function reap(staleAfterMs: number, doRelease = false): Promise<ReapResult> {
+  const cutoff = new Date(Date.now() - staleAfterMs);
+
+  if (!doRelease) {
+    // Read-only: just list stale tasks
+    const conn = await pool.getConnection();
+    try {
+      const [rows] = await conn.execute<TaskRow[]>(
+        `SELECT * FROM tasks WHERE status = 'in_progress' AND claimed_at < ? ORDER BY claimed_at ASC`,
+        [cutoff],
+      );
+      const ids = rows.map(r => r.id);
+      const depsMap = await attachDeps(conn, ids);
+      const stale = rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+      return { stale, released: [] };
+    } finally {
+      conn.release();
+    }
+  }
+
+  // Release mode: release all stale tasks in a single commit
+  return withCommit(`[reap] release stale tasks older than ${Math.round(staleAfterMs / 60000)}m`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE status = 'in_progress' AND claimed_at < ? ORDER BY claimed_at ASC FOR UPDATE`,
+      [cutoff],
+    );
+
+    if (rows.length === 0) return { stale: [], released: [] };
+
+    const now = new Date();
+    const ids = rows.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    await conn.execute(
+      `UPDATE tasks SET status = 'eligible', eligible_at = ?, claimed_by = NULL, claimed_at = NULL WHERE id IN (${placeholders})`,
+      [now, ...ids],
+    );
+
+    const depsMap = await attachDeps(conn, ids);
+    const released = rows.map(r =>
+      rowToTask(
+        { ...r, status: 'eligible', eligible_at: now, claimed_by: null, claimed_at: null },
+        depsMap.get(r.id) ?? [],
+      ),
+    );
+
+    return { stale: released, released };
+  });
+}
