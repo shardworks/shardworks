@@ -142,7 +142,7 @@ function buildArgs(config: ConductedConfig): string[] {
     '--verbose',
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
-    '--model', config.claudeModel,
+    '--model', role.model ?? config.claudeModel,
     '--system-prompt', renderSystemPrompt(role, vars),
   ];
 
@@ -168,49 +168,69 @@ function buildArgs(config: ConductedConfig): string[] {
 // Human-readable stderr formatter
 // ---------------------------------------------------------------------------
 
+type ContentBlock =
+  | { type: 'thinking'; thinking: string }
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; name: string; input?: Record<string, unknown> }
+  | { type: 'tool_result'; content?: string; is_error?: boolean };
+
+/** Returns a short hint string for the most relevant field in a tool's input. */
+function formatToolInput(input: Record<string, unknown>): string {
+  const hint =
+    input['command'] ??
+    input['cmd'] ??
+    input['pattern'] ??
+    input['query'] ??
+    input['path'] ??
+    input['file_path'];
+  if (hint === undefined) return '';
+  // Trim to first line so Bash heredocs don't flood the output
+  const first = String(hint).split('\n')[0]!;
+  return first.length > 120 ? `: ${first.slice(0, 120)}…` : `: ${first}`;
+}
+
+/**
+ * Formats a single Claude stream-json event into a human-readable string for
+ * stderr output. Returns null for event types that need no display.
+ *
+ * Claude CLI emits complete message objects (not streaming deltas) where all
+ * content is in event.message.content[].
+ */
 function formatEvent(event: StreamEvent): string | null {
-  // Content block delta events (streaming tokens)
-  if (event.type === 'content_block_delta') {
-    const delta = event.delta as { type?: string; text?: string; thinking?: string } | undefined;
-    if (delta?.type === 'thinking_delta' && delta.thinking) {
-      return `[thinking] ${delta.thinking}`;
-    }
-    if (delta?.type === 'text_delta' && delta.text) {
-      return delta.text;
-    }
-    return null;
-  }
-
-  // Content block start (tool use)
-  if (event.type === 'content_block_start') {
-    const block = event.content_block;
-    if (block?.type === 'tool_use' && block.name) {
-      return `\n[tool] ${block.name}`;
-    }
-    return null;
-  }
-
-  // Assistant message events (non-streaming)
+  // Assistant turn: thinking blocks, text blocks, tool-use calls
   if (event.type === 'assistant') {
-    if (event.subtype === 'thinking' && event.content) {
-      return `[thinking] ${event.content}`;
+    const content = (event.message as { content?: ContentBlock[] } | undefined)?.content;
+    if (!content?.length) return null;
+
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block.type === 'thinking' && block.thinking) {
+        parts.push(`[thinking] ${block.thinking}`);
+      } else if (block.type === 'text' && block.text) {
+        parts.push(block.text);
+      } else if (block.type === 'tool_use' && block.name) {
+        const hint = block.input ? formatToolInput(block.input) : '';
+        parts.push(`[tool] ${block.name}${hint}`);
+      }
     }
-    if (event.subtype === 'text' && event.content) {
-      return event.content;
-    }
-    if (event.subtype === 'tool_use') {
-      const name = (event as Record<string, unknown>).name ?? (event as Record<string, unknown>).tool_name ?? 'unknown';
-      return `\n[tool] ${name}`;
-    }
-    return null;
+    return parts.length > 0 ? parts.join('\n') : null;
   }
 
-  // Tool results
-  if (event.type === 'tool' && event.subtype === 'result') {
-    const name = (event as Record<string, unknown>).name ?? (event as Record<string, unknown>).tool_name ?? 'tool';
-    const output = String(event.content ?? '');
-    const truncated = output.length > 200 ? output.slice(0, 200) + '...' : output;
-    return `[result] ${name}: ${truncated}`;
+  // User turn: tool results
+  if (event.type === 'user') {
+    const content = (event.message as { content?: ContentBlock[] } | undefined)?.content;
+    if (!content?.length) return null;
+
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block.type === 'tool_result') {
+        const output = String(block.content ?? '');
+        const truncated = output.length > 300 ? output.slice(0, 300) + '…' : output;
+        const errFlag = block.is_error ? ' [error]' : '';
+        parts.push(`[result${errFlag}] ${truncated}`);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : null;
   }
 
   // Final result
@@ -297,11 +317,7 @@ export function launch(config: ConductedConfig): LaunchHandle {
         if (config.interactive) {
           const formatted = formatEvent(event);
           if (formatted !== null) {
-            process.stderr.write(formatted);
-            // Add newline for block-level events, not for streaming deltas
-            if (event.type !== 'content_block_delta') {
-              process.stderr.write('\n');
-            }
+            process.stderr.write(formatted + '\n');
           }
         }
       } catch {

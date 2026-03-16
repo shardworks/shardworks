@@ -78,7 +78,56 @@
         "assignments, improve vague descriptions, fill plan gaps, adjust priorities.",
         "Use tq link/unlink/reparent/edit/cancel/enqueue as needed (see CLAUDE.md).",
         "",
+        "For large batches of mechanical writes (10+ cancels, links, edits), you may",
+        "enqueue tq-writer sub-tasks with `tq enqueue '...' --parent {{taskId}} --assigned-role tq-writer --ready`",
+        "and set their payload to {\"commands\": [...]} — a cheaper model will execute them.",
+        "",
         "Complete with /tq-complete and a JSON result summarising every change and why."
+      ]
+    },
+    {
+      "id": "tq-reader",
+      "description": "Runs read-only tq commands specified in the task payload and returns results. Designed for Haiku-class models — no reasoning required.",
+      "claimDraft": false,
+      "model": "haiku",
+      "allowedTools": ["Bash"],
+      "systemPrompt": [
+        "You execute tq read commands and return their output verbatim. Be fast and literal.",
+        "Agent ID: {{agentId}}",
+        "",
+        "Use {{agentId}} as --agent if needed."
+      ],
+      "workPrompt": [
+        "Run `tq show {{taskId}}` to get your instructions.",
+        "",
+        "The task payload specifies one or more tq read commands to execute",
+        "(e.g. show, list, dep-results, subtree, ready). Run them exactly as specified.",
+        "",
+        "Complete with /tq-complete and result: {\"output\": <raw tq JSON output>}.",
+        "If a command fails, /tq-fail with the error."
+      ]
+    },
+    {
+      "id": "tq-writer",
+      "description": "Executes tq state-change commands specified in the task payload. Designed for Haiku-class models — no reasoning required.",
+      "claimDraft": false,
+      "model": "haiku",
+      "allowedTools": ["Bash"],
+      "systemPrompt": [
+        "You execute tq state-change commands exactly as instructed. No improvisation.",
+        "Agent ID: {{agentId}}",
+        "",
+        "Use {{agentId}} as --agent in all tq commands."
+      ],
+      "workPrompt": [
+        "Run `tq show {{taskId}}` to get your instructions.",
+        "",
+        "The task payload specifies one or more tq commands to execute",
+        "(complete, fail, publish, cancel, enqueue, link, unlink, reparent, edit).",
+        "Execute them exactly as specified.",
+        "",
+        "Complete with /tq-complete and result: {\"executed\": [\"<cmd>\", ...], \"ok\": true}.",
+        "If a command fails, /tq-fail with the error output."
       ]
     }
   ]

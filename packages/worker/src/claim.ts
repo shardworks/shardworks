@@ -41,9 +41,11 @@ export async function claimTask(agentId: string, workDir: string, claimDraft = f
 /**
  * Claim a specific task by ID for an agent.
  * Used in conducted mode where the conductor pre-selects the task.
+ * Pass claimDraft=true for refiner roles that claim from the draft pool.
  */
-export async function claimTaskById(agentId: string, workDir: string, taskId: string): Promise<string> {
+export async function claimTaskById(agentId: string, workDir: string, taskId: string, claimDraft = false): Promise<string> {
   const args = ['claim-id', taskId, '--agent', agentId];
+  if (claimDraft) args.push('--draft');
   const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
   if (exitCode !== 0) {
     throw new Error(`tq claim-id failed: ${stderr.trim() || stdout.trim()}`);

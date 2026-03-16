@@ -15,6 +15,12 @@ export interface RoleDefinition {
    */
   claimDraft: boolean;
   /**
+   * Model override for this role. Overrides the global CLAUDE_MODEL env var.
+   * Use a cheaper model (e.g. "haiku") for mechanical roles that require no reasoning.
+   * If omitted, falls back to config.claudeModel (CLAUDE_MODEL env var or "sonnet").
+   */
+  model?: string;
+  /**
    * Restrict Claude to a specific subset of built-in tools.
    * Passed as `--tools` to the claude CLI (comma-separated).
    * If omitted, all tools are available (claude default).
