@@ -1709,6 +1709,104 @@ export async function getRelations(taskId: string): Promise<{
 }
 
 // ---------------------------------------------------------------------------
+// diff
+// ---------------------------------------------------------------------------
+
+export interface TaskDiffEntry {
+  diff_type: 'added' | 'modified' | 'removed';
+  id: string;
+  from_status: string | null;
+  to_status: string | null;
+  from_description: string | null;
+  to_description: string | null;
+  from_priority: number | null;
+  to_priority: number | null;
+  from_claimed_by: string | null;
+  to_claimed_by: string | null;
+  from_assigned_role: string | null;
+  to_assigned_role: string | null;
+}
+
+interface DiffRow extends RowDataPacket {
+  diff_type: string;
+  from_id: string | null;
+  to_id: string | null;
+  from_status: string | null;
+  to_status: string | null;
+  from_description: string | null;
+  to_description: string | null;
+  from_priority: number | null;
+  to_priority: number | null;
+  from_claimed_by: string | null;
+  to_claimed_by: string | null;
+  from_assigned_role: string | null;
+  to_assigned_role: string | null;
+}
+
+/**
+ * Validate a Dolt commit ref: allows hex hashes, branch/tag names with
+ * alphanumerics, dots, dashes, underscores, slashes, and carets (for HEAD^).
+ * Rejects anything that could form a SQL injection.
+ */
+function validateCommitRef(ref: string): string {
+  if (!/^[a-zA-Z0-9._\-/^~@{}:]+$/.test(ref)) {
+    throw new Error(`Invalid commit ref: ${JSON.stringify(ref)}`);
+  }
+  return ref;
+}
+
+/**
+ * Return all task rows that changed between two Dolt commits.
+ * Uses the DOLT_DIFF() table function for multi-commit range support.
+ * Both fromCommit and toCommit can be commit hashes, branch names, or tags.
+ *
+ * Note: DOLT_DIFF() table function arguments cannot be parameterised with
+ * bind variables; the refs are validated and inlined as string literals.
+ */
+export async function diff(fromCommit: string, toCommit: string): Promise<TaskDiffEntry[]> {
+  const safeFrom = validateCommitRef(fromCommit);
+  const safeTo   = validateCommitRef(toCommit);
+  const conn = await pool.getConnection();
+  try {
+    const [rows] = await conn.execute<DiffRow[]>(
+      `SELECT
+         diff_type,
+         from_id,
+         to_id,
+         from_status,
+         to_status,
+         from_description,
+         to_description,
+         from_priority,
+         to_priority,
+         from_claimed_by,
+         to_claimed_by,
+         from_assigned_role,
+         to_assigned_role
+       FROM DOLT_DIFF('${safeFrom}', '${safeTo}', 'tasks')
+       ORDER BY COALESCE(to_id, from_id) ASC`,
+    );
+
+    return rows.map((r) => ({
+      diff_type: r.diff_type as 'added' | 'modified' | 'removed',
+      id: (r.to_id ?? r.from_id) as string,
+      from_status: r.from_status ?? null,
+      to_status: r.to_status ?? null,
+      from_description: r.from_description ?? null,
+      to_description: r.to_description ?? null,
+      from_priority: r.from_priority ?? null,
+      to_priority: r.to_priority ?? null,
+      from_claimed_by: r.from_claimed_by ?? null,
+      to_claimed_by: r.to_claimed_by ?? null,
+      from_assigned_role: r.from_assigned_role ?? null,
+      to_assigned_role: r.to_assigned_role ?? null,
+    }));
+  } finally {
+    conn.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
 
