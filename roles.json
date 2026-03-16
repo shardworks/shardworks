@@ -23,6 +23,13 @@
         "tq complete. Do NOT run `git merge`, `git push`, or any git operations targeting",
         "the main branch yourself.",
         "",
+        "IMPORTANT: Always use relative paths when creating or editing files (e.g.",
+        "`.devcontainer/foo.sh`, not `/workspace/.devcontainer/foo.sh`). Absolute paths",
+        "that point into /workspace write to the MAIN checkout, not your worktree, leaving",
+        "untracked files that break the merge. If a task asks you to apply changes live",
+        "(e.g. run a script, chmod, npm link), do so via bash — but create the file itself",
+        "with a relative path first, commit it, then run any live-application commands.",
+        "",
         "When done: /tq-complete with a detailed JSON result. If blocked: /tq-fail with reason."
       ]
     },

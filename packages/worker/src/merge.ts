@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -102,9 +102,23 @@ export async function mergeWorktreeToMain(
   // 4. Merge the worktree branch into main (--no-ff for clear history)
   // ------------------------------------------------------------------
   const mergeMsg = `Merge task ${taskId}`;
-  const mergeResult = await exec(
+  let mergeResult = await exec(
     'git', ['merge', branchName, '--no-ff', '-m', mergeMsg], workDir,
   );
+
+  if (mergeResult.exitCode !== 0) {
+    // If the failure is because untracked files would be overwritten, remove
+    // them and retry once — they would have been replaced by the merge anyway.
+    const staleFiles = parseUntrackedOverwriteFiles(mergeResult.stderr);
+    if (staleFiles.length > 0) {
+      for (const f of staleFiles) {
+        try { rmSync(join(workDir, f)); } catch { /* ignore if already gone */ }
+      }
+      mergeResult = await exec(
+        'git', ['merge', branchName, '--no-ff', '-m', mergeMsg], workDir,
+      );
+    }
+  }
 
   if (mergeResult.exitCode !== 0) {
     // Abort to leave the repo clean
@@ -162,6 +176,30 @@ async function pushWithRetry(workDir: string): Promise<{ ok: boolean; msg: strin
   if (push2.exitCode === 0) return { ok: true, msg: '' };
 
   return { ok: false, msg: push2.stderr.trim() };
+}
+
+/**
+ * Parse git's "untracked working tree files would be overwritten by merge"
+ * error output and return the list of file paths that need to be removed.
+ */
+function parseUntrackedOverwriteFiles(stderr: string): string[] {
+  const files: string[] = [];
+  let capturing = false;
+  for (const line of stderr.split('\n')) {
+    if (line.includes('untracked working tree files would be overwritten')) {
+      capturing = true;
+      continue;
+    }
+    if (capturing) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('Please') || trimmed.startsWith('Aborting') || trimmed.startsWith('Merge')) {
+        capturing = false;
+      } else {
+        files.push(trimmed);
+      }
+    }
+  }
+  return files;
 }
 
 async function cleanupWorktree(
