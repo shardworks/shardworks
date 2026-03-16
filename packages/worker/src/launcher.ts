@@ -152,8 +152,16 @@ function buildArgs(config: ConductedConfig): string[] {
     args.push('--tools', role.allowedTools.join(','));
   }
 
-  // Worktree is keyed by task ID — survives across agent invocations
-  args.push('--worktree', config.taskId);
+  // Worktree is keyed by task ID — survives across agent invocations.
+  // Skip for roles that have no file-editing tools (Write/Edit): they only
+  // need tq commands and don't benefit from a git worktree checkout.
+  const needsWorktree =
+    !role.allowedTools ||
+    role.allowedTools.includes('Write') ||
+    role.allowedTools.includes('Edit');
+  if (needsWorktree) {
+    args.push('--worktree', config.taskId);
+  }
 
   if (config.claudeMaxBudgetUsd !== undefined) {
     args.push('--max-budget-usd', String(config.claudeMaxBudgetUsd));
