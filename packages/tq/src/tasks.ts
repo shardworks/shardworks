@@ -618,12 +618,16 @@ export async function claim(agentId: string, draft = false, role?: string): Prom
     : 'priority DESC, eligible_at ASC';
 
   // Role filter:
-  // - role specified → only claim tasks with assigned_role = ? (exact match, no NULL fallback)
-  //   This prevents e.g. a planner agent from hijacking NULL-assigned implementer tasks.
-  // - no role specified → only claim tasks with assigned_role IS NULL (implementer default)
-  const roleCondition = role
-    ? 'assigned_role = ?'
-    : 'assigned_role IS NULL';
+  // - "implementer" role → claim tasks assigned to implementer OR unassigned (NULL).
+  //   Unassigned tasks are implicitly implementer work.
+  // - any other role (e.g. "planner") → exact match only, no NULL fallback.
+  //   This prevents planners from hijacking unassigned implementer tasks.
+  // - no role specified → only claim tasks with assigned_role IS NULL.
+  const roleCondition = role === 'implementer'
+    ? '(assigned_role = ? OR assigned_role IS NULL)'
+    : role
+      ? 'assigned_role = ?'
+      : 'assigned_role IS NULL';
   const roleParams = role ? [role] : [];
 
   return withCommit(`[claim${draft ? '-draft' : ''}] by ${agentId}`, async conn => {
