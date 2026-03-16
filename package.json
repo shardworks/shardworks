@@ -4,7 +4,7 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev -w packages/queue-server",
+    "dev": "npm run dev -w packages/tq",
     "test": "npm run test --workspaces --if-present"
   }
 }

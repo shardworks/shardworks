@@ -29,7 +29,6 @@ export async function initSchema(): Promise<void> {
     for (const sql of STATEMENTS) {
       await conn.execute(sql);
     }
-    console.log('[schema] Tables ready.');
   } finally {
     conn.release();
   }
