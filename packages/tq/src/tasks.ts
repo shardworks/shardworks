@@ -611,7 +611,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 // T09 — Claim (no tag routing for MVP)
 // ---------------------------------------------------------------------------
 
-export async function claim(agentId: string, draft = false, role?: string): Promise<ClaimResult> {
+export async function claim(agentId: string, capabilities: string[] = [], draft = false, role?: string): Promise<ClaimResult> {
   const targetStatus = draft ? 'draft' : 'eligible';
   const orderBy = draft
     ? 'priority DESC, created_at ASC'
@@ -630,13 +630,29 @@ export async function claim(agentId: string, draft = false, role?: string): Prom
       : 'assigned_role IS NULL';
   const roleParams = role ? [role] : [];
 
+  // Capability filter:
+  // Only claim tasks whose required tags are a subset of the agent's capabilities.
+  // If no capabilities provided, claim any task regardless of tags.
+  // SQL: tasks with no tags that are outside the capability set
+  //   (i.e. all tags must be in the capability set, or the task has no tags at all).
+  let capabilityCondition = '';
+  const capabilityParams: string[] = [];
+  if (capabilities.length > 0) {
+    const placeholders = capabilities.map(() => '?').join(', ');
+    capabilityCondition = ` AND NOT EXISTS (
+      SELECT 1 FROM task_tags
+      WHERE task_id = tasks.id AND tag NOT IN (${placeholders})
+    )`;
+    capabilityParams.push(...capabilities);
+  }
+
   return withCommit(`[claim${draft ? '-draft' : ''}] by ${agentId}`, async conn => {
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks WHERE status = ? AND ${roleCondition}
+      `SELECT * FROM tasks WHERE status = ? AND ${roleCondition}${capabilityCondition}
        ORDER BY ${orderBy}
        LIMIT 1
        FOR UPDATE`,
-      [targetStatus, ...roleParams],
+      [targetStatus, ...roleParams, ...capabilityParams],
     );
 
     if (rows.length === 0) return { task: null };

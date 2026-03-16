@@ -169,8 +169,9 @@ program
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
   .option('--role <role>', 'Only claim tasks with this exact assigned_role (no fallback to unassigned tasks). Omit to claim only unassigned (NULL) tasks.')
-  .action(async (opts: { agent: string; draft?: boolean; role?: string }) => {
-    await run(() => claim(opts.agent, opts.draft ?? false, opts.role));
+  .option('--capability <tag>', 'Capability tag this agent supports (repeatable). Only tasks whose required tags are a subset of the provided capabilities will be claimed. Omit to claim any task regardless of tags.', collect, [] as string[])
+  .action(async (opts: { agent: string; draft?: boolean; role?: string; capability: string[] }) => {
+    await run(() => claim(opts.agent, opts.capability, opts.draft ?? false, opts.role));
   });
 
 // ── tq claim-id ─────────────────────────────────────────────────────────────

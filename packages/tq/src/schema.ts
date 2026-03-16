@@ -30,6 +30,11 @@ const STATEMENTS = [
     created_at        DATETIME(3)  NOT NULL,
     PRIMARY KEY (from_task_id, to_task_id, relationship_type)
   )`,
+  `CREATE TABLE IF NOT EXISTS task_tags (
+    task_id VARCHAR(64) NOT NULL,
+    tag     VARCHAR(64) NOT NULL,
+    PRIMARY KEY (task_id, tag)
+  )`,
 ];
 
 /** Migrations that may fail if already applied (e.g. column already exists). */
