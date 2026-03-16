@@ -1512,6 +1512,50 @@ export async function relate(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Status counts — aggregate task counts by status
+// ---------------------------------------------------------------------------
+
+/**
+ * Return a StatusRollup showing how many tasks exist in each status.
+ * If `tag` is provided, only tasks with that tag in task_tags are counted.
+ */
+export async function statusCounts(tag?: string): Promise<StatusRollup> {
+  const conn = await pool.getConnection();
+  try {
+    interface CountRow extends RowDataPacket { status: string; cnt: number; }
+    let rows: CountRow[];
+    if (tag) {
+      [rows] = await conn.execute<CountRow[]>(
+        `SELECT t.status, COUNT(*) AS cnt
+         FROM tasks t
+         JOIN task_tags tt ON tt.task_id = t.id AND tt.tag = ?
+         GROUP BY t.status`,
+        [tag],
+      );
+    } else {
+      [rows] = await conn.execute<CountRow[]>(
+        `SELECT status, COUNT(*) AS cnt FROM tasks GROUP BY status`,
+      );
+    }
+
+    const rollup: StatusRollup = {
+      draft: 0, pending: 0, eligible: 0, in_progress: 0,
+      completed: 0, failed: 0, cancelled: 0, blocked: 0, total: 0,
+    };
+    for (const row of rows) {
+      const status = row.status as keyof Omit<StatusRollup, 'total'>;
+      if (status in rollup) {
+        rollup[status] = Number(row.cnt);
+      }
+      rollup.total += Number(row.cnt);
+    }
+    return rollup;
+  } finally {
+    conn.release();
+  }
+}
+
 /**
  * List all typed relationships involving a task (as either source or target).
  * Returns relationships grouped by direction.

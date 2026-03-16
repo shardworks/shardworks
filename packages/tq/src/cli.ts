@@ -30,6 +30,7 @@ import {
   relate,
   getRelations,
   getMaxPriority,
+  statusCounts,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -437,6 +438,16 @@ program
   .description('List all typed relationships for a task (outgoing and incoming)')
   .action(async (taskId: string) => {
     await run(() => getRelations(taskId));
+  });
+
+// ── tq status-counts ─────────────────────────────────────────────────────────
+
+program
+  .command('status-counts')
+  .description('Show task counts grouped by status (optionally filtered by tag)')
+  .option('--tag <tag>', 'Only count tasks with this tag')
+  .action(async (opts: { tag?: string }) => {
+    await run(() => statusCounts(opts.tag));
   });
 
 program.parse();
