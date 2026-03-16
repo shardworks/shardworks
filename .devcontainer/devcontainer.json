@@ -4,7 +4,8 @@
     "VSCODE_AGENT_FOLDER": "/vscode"
   },
   "remoteEnv": {
-    "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock"
+    "SSH_AUTH_SOCK": "/tmp/ssh-filter/agent.sock",
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
   },
   "customizations": {
     "vscode": {
@@ -30,7 +31,8 @@
   "init": true,
   "initializeCommand": "SSH_KEY_FILTER=seatec .devcontainer/scripts/start-filter-agent.sh",
   "mounts": [
-    "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached"
+    "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/vscode/.claude/.credentials.json,type=bind,consistency=cached"
   ],
   "name": "[shardworks] devcontainer",
   "overrideCommand": true,
