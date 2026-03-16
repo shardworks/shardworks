@@ -69,6 +69,9 @@ export async function mergeWorktreeToMain(
   // ------------------------------------------------------------------
   const verifyBranch = await exec('git', ['rev-parse', '--verify', branchName], workDir);
   if (verifyBranch.exitCode !== 0) {
+    // No branch — agent made no commits. Still remove the worktree directory if
+    // one was created (the branch won't exist, so pass undefined to skip branch deletion).
+    await cleanupWorktree(workDir, worktreePath, undefined);
     return {
       ok: true,
       reason: 'no-branch',
@@ -205,12 +208,14 @@ function parseUntrackedOverwriteFiles(stderr: string): string[] {
 async function cleanupWorktree(
   workDir: string,
   worktreePath: string,
-  branchName: string,
+  branchName: string | undefined,
 ): Promise<void> {
   // Remove the worktree directory if it still exists
   if (existsSync(worktreePath)) {
     await exec('git', ['worktree', 'remove', '--force', worktreePath], workDir);
   }
-  // Delete the local branch (branch may already be gone if worktree was removed)
-  await exec('git', ['branch', '-d', branchName], workDir);
+  // Delete the local branch (skip if no branch was created, e.g. no-branch case)
+  if (branchName) {
+    await exec('git', ['branch', '-d', branchName], workDir);
+  }
 }
