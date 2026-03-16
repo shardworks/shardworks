@@ -8,6 +8,8 @@ import type {
   ClaimResult,
   SubtreeResult,
   DepResults,
+  TaskRelationship,
+  RelationshipType,
 } from '@shardworks/shared-types';
 import { pool, withCommit, withTransaction } from './db.js';
 import { generateId, generateChildId } from './id.js';
@@ -1217,4 +1219,119 @@ export async function reap(staleAfterMs: number, doRelease = false): Promise<Rea
 
     return { stale: released, released };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Typed Relationships (FR-7, FR-21) — non-scheduling annotated edges
+// ---------------------------------------------------------------------------
+
+const VALID_RELATIONSHIP_TYPES: Set<string> = new Set([
+  'relates_to',
+  'duplicates',
+  'supersedes',
+  'replies_to',
+  'spawned_from',
+]);
+
+interface RelationshipRow extends RowDataPacket {
+  from_task_id: string;
+  to_task_id: string;
+  relationship_type: string;
+  created_by: string;
+  created_at: Date;
+}
+
+function rowToRelationship(row: RelationshipRow): TaskRelationship {
+  return {
+    from_task_id: row.from_task_id,
+    to_task_id: row.to_task_id,
+    relationship_type: row.relationship_type as RelationshipType,
+    created_by: row.created_by,
+    created_at: row.created_at,
+  };
+}
+
+/**
+ * Create an annotated (non-scheduling) relationship between two tasks.
+ * Idempotent: re-inserting the same (from, to, type) triple is a no-op.
+ */
+export async function relate(
+  fromTaskId: string,
+  toTaskId: string,
+  relationshipType: string,
+  createdBy: string,
+): Promise<TaskRelationship> {
+  if (!VALID_RELATIONSHIP_TYPES.has(relationshipType)) {
+    throw new Error(
+      `Invalid relationship type "${relationshipType}". Valid types: ${[...VALID_RELATIONSHIP_TYPES].join(', ')}`,
+    );
+  }
+
+  return withCommit(`[relate] ${fromTaskId} -[${relationshipType}]-> ${toTaskId}`, async conn => {
+    // Verify both tasks exist
+    const [fromRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM tasks WHERE id = ?',
+      [fromTaskId],
+    );
+    if (fromRows.length === 0) throw new Error(`Task not found: ${fromTaskId}`);
+
+    const [toRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM tasks WHERE id = ?',
+      [toTaskId],
+    );
+    if (toRows.length === 0) throw new Error(`Task not found: ${toTaskId}`);
+
+    const now = new Date();
+
+    // Upsert — ignore duplicate (idempotent)
+    await conn.execute(
+      `INSERT INTO task_relationships (from_task_id, to_task_id, relationship_type, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE created_at = created_at`,
+      [fromTaskId, toTaskId, relationshipType, createdBy, now],
+    );
+
+    const [rows] = await conn.execute<RelationshipRow[]>(
+      `SELECT * FROM task_relationships WHERE from_task_id = ? AND to_task_id = ? AND relationship_type = ?`,
+      [fromTaskId, toTaskId, relationshipType],
+    );
+
+    return rowToRelationship(rows[0]!);
+  });
+}
+
+/**
+ * List all typed relationships involving a task (as either source or target).
+ * Returns relationships grouped by direction.
+ */
+export async function getRelations(taskId: string): Promise<{
+  outgoing: TaskRelationship[];
+  incoming: TaskRelationship[];
+}> {
+  const conn = await pool.getConnection();
+  try {
+    // Verify task exists
+    const [taskRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM tasks WHERE id = ?',
+      [taskId],
+    );
+    if (taskRows.length === 0) throw new Error(`Task not found: ${taskId}`);
+
+    const [outRows] = await conn.execute<RelationshipRow[]>(
+      `SELECT * FROM task_relationships WHERE from_task_id = ? ORDER BY created_at ASC`,
+      [taskId],
+    );
+
+    const [inRows] = await conn.execute<RelationshipRow[]>(
+      `SELECT * FROM task_relationships WHERE to_task_id = ? ORDER BY created_at ASC`,
+      [taskId],
+    );
+
+    return {
+      outgoing: outRows.map(rowToRelationship),
+      incoming: inRows.map(rowToRelationship),
+    };
+  } finally {
+    conn.release();
+  }
 }
