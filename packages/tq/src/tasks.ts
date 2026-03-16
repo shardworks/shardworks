@@ -769,8 +769,10 @@ export async function publish(taskId: string, agentId: string): Promise<Task> {
     );
     if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
     const row = rows[0]!;
-    if (row.status !== 'in_progress') throw new Error(`Task ${taskId} is not in_progress (status: ${row.status})`);
-    if (row.claimed_by !== agentId) throw new Error(`Task ${taskId} is not claimed by ${agentId}`);
+    if (row.status !== 'in_progress' && row.status !== 'draft')
+      throw new Error(`Task ${taskId} cannot be published (status: ${row.status})`);
+    if (row.status === 'in_progress' && row.claimed_by !== agentId)
+      throw new Error(`Task ${taskId} is not claimed by ${agentId}`);
 
     // Determine eligibility based on whether all existing dependencies are completed
     const [depRows] = await conn.execute<RowDataPacket[]>(
