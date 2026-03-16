@@ -186,6 +186,8 @@ export async function dashboard(): Promise<void> {
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
   let hideCompletedSubtrees = true;
+  // Parallel to the tree lines rendered in pipelineBox (offset by 1 for the legend line)
+  let pipelineTaskIds: string[] = [];
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -252,6 +254,7 @@ export async function dashboard(): Promise<void> {
 
   interface TaskTreeResult {
     lines: string[];
+    taskIds: string[];  // parallel to lines: the full task ID for each rendered line
     hiddenCount: number;
   }
 
@@ -281,21 +284,31 @@ export async function dashboard(): Promise<void> {
       }
 
       const lines: string[] = [];
-      function renderNode(node: TaskRow, indent: number): void {
+      const taskIds: string[] = [];
+      function renderNode(node: TaskRow, indent: number, parentId?: string): void {
         const prefix = indent === 0 ? '' : '  '.repeat(indent - 1) + '├─ ';
         const statusIcon = statusSymbol(node.status, node.assigned_role);
         const desc = node.description.length > 50
           ? node.description.slice(0, 47) + '...'
           : node.description;
-        lines.push(`${prefix}${statusIcon} ${node.id} ${desc}`);
-        const kids = children.get(node.id) ?? [];
+        // Abbreviate child IDs: show only the suffix after the parent prefix
+        // e.g. parent tq-abc123, child tq-abc123.def456 → display .def456
+        let displayId = node.id;
+        if (indent > 0 && parentId && node.id.startsWith(parentId)) {
+          displayId = node.id.slice(parentId.length);
+        }
+        lines.push(`${prefix}${statusIcon} ${displayId} ${desc}`);
+        taskIds.push(node.id);
+        // Sort children by priority DESC (defensive: SQL already orders this way,
+        // but an explicit sort ensures consistent rendering regardless of query order)
+        const kids = (children.get(node.id) ?? []).sort((a, b) => b.priority - a.priority);
         for (const kid of kids) {
-          renderNode(kid, indent + 1);
+          renderNode(kid, indent + 1, node.id);
         }
       }
 
-      // Render root tasks (no parent)
-      const roots = children.get(null) ?? [];
+      // Render root tasks (no parent), sorted by priority DESC
+      const roots = (children.get(null) ?? []).sort((a, b) => b.priority - a.priority);
       let hiddenCount = 0;
       for (const root of roots) {
         if (hideCompletedSubtrees && isSubtreeCompleted(root.id)) {
@@ -305,9 +318,9 @@ export async function dashboard(): Promise<void> {
         renderNode(root, 0);
       }
 
-      return { lines, hiddenCount };
+      return { lines, taskIds, hiddenCount };
     } catch (err) {
-      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], hiddenCount: 0 };
+      return { lines: [`{red-fg}Error loading tasks: ${err}{/red-fg}`], taskIds: [], hiddenCount: 0 };
     }
   }
 
@@ -320,6 +333,8 @@ export async function dashboard(): Promise<void> {
         : status === 'pending' ? '…'
         : status === 'failed' ? '✗'
         : status === 'draft' ? '□'
+        : status === 'cancelled' ? '⊘'
+        : status === 'blocked' ? '⊗'
         : '?';
       return `{red-fg}${icon}{/red-fg}`;
     }
@@ -330,6 +345,8 @@ export async function dashboard(): Promise<void> {
       case 'pending':     return '{grey-fg}…{/grey-fg}';
       case 'failed':      return '{#FF8C00-fg}✗{/#FF8C00-fg}';
       case 'draft':       return '{grey-fg}□{/grey-fg}';
+      case 'cancelled':   return '{grey-fg}⊘{/grey-fg}';
+      case 'blocked':     return '{#FF8C00-fg}⊗{/#FF8C00-fg}';
       default:            return '{white-fg}?{/white-fg}';
     }
   }
@@ -626,7 +643,8 @@ export async function dashboard(): Promise<void> {
       renderWorkersList(workers);
 
       // Update pipeline
-      const { lines: treeLines, hiddenCount } = tree;
+      const { lines: treeLines, taskIds: treeTaskIds, hiddenCount } = tree;
+      pipelineTaskIds = treeTaskIds;
       const hiddenLabel = hiddenCount > 0
         ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
         : '';
@@ -751,21 +769,14 @@ export async function dashboard(): Promise<void> {
   // Enter on Task Pipeline → open full-screen log overlay for the selected task
   pipelineBox.key(['enter'], async () => {
     const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
-    // Pipeline items array: [legendLine, ...treeLines], so treeLines start at index 1.
-    // Extract the task ID from the selected line using a regex.
-    const items = (pipelineBox as unknown as { items: Array<{ getText?: () => string; content?: string }> }).items;
-    const rawItem = items[idx];
-    const rawText: string = typeof rawItem?.getText === 'function'
-      ? rawItem.getText()
-      : (rawItem?.content ?? String(rawItem ?? ''));
-    // Strip blessed markup tags to get plain text, then extract task ID
-    const plain = rawText.replace(/\{[^}]+\}/g, '');
-    const match = plain.match(/tq-[a-f0-9]+(?:\.[a-f0-9]+)*/i);
-    if (!match) {
+    // Pipeline items: [legendLine, ...treeLines]. treeLines start at index 1.
+    // pipelineTaskIds[i] corresponds to treeLines[i], i.e. pipelineBox item index i+1.
+    // (IDs may be abbreviated in display, so we use the parallel taskIds array.)
+    const taskId = idx > 0 ? (pipelineTaskIds[idx - 1] ?? null) : null;
+    if (!taskId) {
       // Selected item has no task ID (e.g. legend line) — do nothing
       return;
     }
-    const taskId = match[0];
 
     // Find the log file for this task (flat layout: data/work-logs/<task-id>.jsonl)
     const base = workLogsDir();
