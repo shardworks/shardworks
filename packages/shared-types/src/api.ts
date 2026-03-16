@@ -68,7 +68,7 @@ export interface SubtreeResult {
   rollup: StatusRollup;
 }
 
-/** Maps dependency task ID → result_payload of that dependency. */
+/** Maps dependency task ID → result_summary (if set) or result_payload of that dependency. */
 export type DepResults = Record<string, unknown>;
 
 export interface ApiError {

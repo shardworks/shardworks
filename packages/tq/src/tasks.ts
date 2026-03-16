@@ -425,7 +425,7 @@ export async function getDepResults(taskId: string): Promise<DepResults> {
   const conn = await pool.getConnection();
   try {
     const [rows] = await conn.execute<RowDataPacket[]>(
-      `SELECT t.id, t.result_payload
+      `SELECT t.id, COALESCE(t.result_summary, t.result_payload) AS result_payload
        FROM task_dependencies td
        JOIN tasks t ON t.id = td.dep_id
        WHERE td.task_id = ?`,
