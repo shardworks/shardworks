@@ -68,7 +68,6 @@ export type Phase =
   | 'idle'
   | 'reaping'
   | 'assessing'
-  | 'planning'
   | 'spawning'
   | 'waiting'
   | 'stopping';
@@ -83,7 +82,6 @@ export interface ActiveWorker {
 export interface ConductorStats {
   tasksReaped: number;
   workersSpawned: number;
-  fullPlansRun: number;
   tickCount: number;
   startedAt: string;
 }
@@ -93,7 +91,6 @@ export type AlertType = 'rate_limited' | 'task_exhaustion' | 'crashed' | 'merge_
 export interface ConductorState {
   phase: Phase;
   lastTickAt: string | null;
-  lastFullPlanAt: string | null;
   lastNoWorkAt: string | null;
   /**
    * ISO timestamp until which spawning should be suppressed due to a
@@ -115,7 +112,6 @@ export function initialState(): ConductorState {
   return {
     phase: 'starting',
     lastTickAt: null,
-    lastFullPlanAt: null,
     lastNoWorkAt: null,
     rateLimitedUntil: null,
     signalFileOffset: 0,
@@ -124,7 +120,6 @@ export function initialState(): ConductorState {
     stats: {
       tasksReaped: 0,
       workersSpawned: 0,
-      fullPlansRun: 0,
       tickCount: 0,
       startedAt: new Date().toISOString(),
     },

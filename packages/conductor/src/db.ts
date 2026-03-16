@@ -42,13 +42,6 @@ export interface TaskCounts {
   eligible: number;
   /** Tasks waiting on dependencies. */
   pending: number;
-  /** Eligible tasks assigned to the planner role specifically. */
-  eligiblePlanner: number;
-  /**
-   * Planner tasks in any active (non-terminal) state: eligible, pending, or
-   * in_progress.  Used to decide whether to create a new planner task.
-   */
-  activePlannerTasks: number;
   /** Completed tasks. */
   completed: number;
   /** Failed tasks. */
@@ -88,8 +81,6 @@ export async function queryCounts(): Promise<TaskCounts> {
     draft: 0,
     eligible: 0,
     pending: 0,
-    eligiblePlanner: 0,
-    activePlannerTasks: 0,
     completed: 0,
     failed: 0,
     maxDraftPriority: 0,
@@ -103,7 +94,6 @@ export async function queryCounts(): Promise<TaskCounts> {
     switch (row['status']) {
       case 'in_progress':
         counts.inProgress += n;
-        if (row['assigned_role'] === 'planner') counts.activePlannerTasks += n;
         break;
       case 'draft':
         counts.draft += n;
@@ -111,16 +101,10 @@ export async function queryCounts(): Promise<TaskCounts> {
         break;
       case 'eligible':
         counts.eligible += n;
-        if (row['assigned_role'] === 'planner') {
-          counts.eligiblePlanner += n;
-          counts.activePlannerTasks += n;
-        } else {
-          if (maxP > counts.maxEligiblePriority) counts.maxEligiblePriority = maxP;
-        }
+        if (maxP > counts.maxEligiblePriority) counts.maxEligiblePriority = maxP;
         break;
       case 'pending':
         counts.pending += n;
-        if (row['assigned_role'] === 'planner') counts.activePlannerTasks += n;
         break;
       case 'completed':   counts.completed  += n; break;
       case 'failed':      counts.failed     += n; break;
@@ -151,22 +135,3 @@ export async function queryCounts(): Promise<TaskCounts> {
   return counts;
 }
 
-/**
- * Counts tasks created after the given date.
- * Pass null to count all tasks ever created.
- */
-export async function queryTasksSince(since: Date | null): Promise<number> {
-  const pool = getPool();
-  if (since === null) {
-    const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-      'SELECT COUNT(*) AS cnt FROM tasks',
-    );
-    return Number(rows[0]?.['cnt'] ?? 0);
-  }
-
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    'SELECT COUNT(*) AS cnt FROM tasks WHERE created_at > ?',
-    [since],
-  );
-  return Number(rows[0]?.['cnt'] ?? 0);
-}

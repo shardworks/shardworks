@@ -9,8 +9,8 @@ import {
   type Phase,
   type LogFn,
 } from './state.js';
-import { queryCounts, closePool, queryTasksSince, type TaskCounts } from './db.js';
-import { reapStale, spawnWorker, enqueuePlannerTask, type SpawnedWorker } from './spawn.js';
+import { queryCounts, closePool, type TaskCounts } from './db.js';
+import { reapStale, spawnWorker, type SpawnedWorker } from './spawn.js';
 import { readNewSignals } from './signals.js';
 import { processSignals, fireAlert } from './alerts.js';
 
@@ -31,7 +31,6 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
   if (prior) {
     state.signalFileOffset = prior.signalFileOffset;
     state.lastAlertAt      = prior.lastAlertAt;
-    state.lastFullPlanAt   = prior.lastFullPlanAt;
     state.rateLimitedUntil = prior.rateLimitedUntil ?? null;
     // activeWorkers and stats intentionally reset — stale PIDs are unreliable.
   }
@@ -92,7 +91,6 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
 
   log('info', 'Conductor daemon starting', {
     maxWorkers: cfg.maxWorkers,
-    batchPlanThreshold: cfg.batchPlanThreshold,
     pollIntervalMs: cfg.pollIntervalMs,
     staleAfter: cfg.staleAfter,
   });
@@ -194,53 +192,7 @@ async function tick(
   const slots = cfg.maxWorkers - counts.inProgress;
 
   // ------------------------------------------------------------------
-  // 3. Full-backlog planning check
-  //    Trigger when X+ tasks have been created since the last plan.
-  // ------------------------------------------------------------------
-  const since = state.lastFullPlanAt ? new Date(state.lastFullPlanAt) : null;
-  let tasksSinceLastPlan = 0;
-  try {
-    tasksSinceLastPlan = await queryTasksSince(since);
-  } catch (err) {
-    log('warn', 'Could not count tasks since last plan', { error: String(err) });
-  }
-
-  const needsFullPlan =
-    tasksSinceLastPlan >= cfg.batchPlanThreshold &&
-    counts.activePlannerTasks === 0; // avoid creating duplicate planner tasks
-
-  if (needsFullPlan) {
-    setPhase('planning');
-    log('info', `Full-backlog plan triggered (${tasksSinceLastPlan} tasks since last plan)`);
-    try {
-      await runFullBacklogPlan(cfg, state, log);
-    } catch (err) {
-      log('error', 'Full-backlog plan failed', { error: String(err) });
-    }
-    return;
-  }
-
-  // ------------------------------------------------------------------
-  // 4. Ensure at least one planner task exists
-  //    The planner is the conductor's "always-on" worker for backlog
-  //    grooming.  If no planner task is active (eligible/pending/
-  //    in_progress), create one so the spawn loop below has something
-  //    to hand to a planner worker.
-  // ------------------------------------------------------------------
-  if (counts.activePlannerTasks === 0) {
-    try {
-      const description = 'Routine backlog grooming: review priorities, wire dependencies, cancel obsolete tasks, split large tasks into subtasks';
-      const taskId = await enqueuePlannerTask(cfg.workDir, description, 100);
-      log('info', 'Created routine planner task', { taskId });
-      counts.eligiblePlanner++;
-      counts.activePlannerTasks++;
-    } catch (err) {
-      log('warn', 'Failed to create routine planner task', { error: String(err) });
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // 4. Fill available worker slots
+  // 3. Fill available worker slots
   // ------------------------------------------------------------------
 
   // Respect rate-limit hold-off from worker signals.
@@ -266,7 +218,7 @@ async function tick(
       state.lastNoWorkAt = new Date().toISOString();
       log('warn', 'No eligible tasks available — waiting for human input', counts);
       await fireAlert(cfg, state, log, 'task_exhaustion',
-        'Task queue is empty — no draft, eligible, or planner tasks remain',
+        'Task queue is empty — no draft or eligible tasks remain',
         counts as unknown as Record<string, unknown>,
       );
       break;
@@ -281,7 +233,6 @@ async function tick(
         counts.inProgress++;
         if (action === 'refiner') counts.draft = Math.max(0, counts.draft - 1);
         if (action === 'implementer') counts.eligible = Math.max(0, counts.eligible - 1);
-        if (action === 'planner') counts.eligiblePlanner = Math.max(0, counts.eligiblePlanner - 1);
       }
     } catch (err) {
       log('error', `Failed to spawn ${action} worker`, { error: String(err) });
@@ -299,18 +250,16 @@ async function tick(
  * Decide what kind of worker to spawn next, given current task counts.
  *
  * Priority order:
- *   1. Planner — if there are planner-assigned eligible tasks (created by
- *      the conductor's full-backlog run or manually).
- *   2. Priority-aware draft vs eligible comparison — when both draft and
+ *   1. Priority-aware draft vs eligible comparison — when both draft and
  *      eligible tasks exist, compare their highest priorities so that a
  *      high-priority draft is refined before a lower-priority eligible task
  *      is started.  If the top draft priority >= top eligible priority,
  *      spawn a refiner; otherwise spawn an implementer.
- *   3. Implementer — if there are directly implementable eligible tasks.
- *   4. Refiner — if there are draft tasks (including children of eligible
+ *   2. Implementer — if there are directly implementable eligible tasks.
+ *   3. Refiner — if there are draft tasks (including children of eligible
  *      parent containers).  Limited to one per tick to avoid races where
  *      two refiners claim the same draft.
- *   5. null — nothing to do, notify humans.
+ *   4. null — nothing to do, notify humans.
  *
  * "Implementable" eligible tasks exclude parent containers whose children are
  * all in draft state (not yet refined).  Those parents need a refiner first;
@@ -319,12 +268,8 @@ async function tick(
 function decideNextAction(
   counts: TaskCounts,
   spawnedThisTick: number,
-): 'implementer' | 'refiner' | 'planner' | null {
-  if (counts.eligiblePlanner > 0) return 'planner';
-
-  const eligibleWork = counts.eligible - counts.eligiblePlanner;
-  // Exclude eligible parents that can't be implemented yet (children still draft).
-  const implementableEligible = Math.max(0, eligibleWork - counts.eligibleBlockedByChildren);
+): 'implementer' | 'refiner' | null {
+  const implementableEligible = Math.max(0, counts.eligible - counts.eligibleBlockedByChildren);
   const canRefine = counts.draft > 0 && spawnedThisTick === 0;
 
   // Both directly-implementable and draft tasks exist — pick based on top priority
@@ -346,21 +291,11 @@ async function doSpawn(
   cfg: ConductorConfig,
   state: ConductorState,
   log: LogFn,
-  action: 'implementer' | 'refiner' | 'planner',
+  action: 'implementer' | 'refiner',
   _counts: TaskCounts,
 ): Promise<SpawnedWorker | null> {
-  let spawned: SpawnedWorker;
-
-  if (action === 'planner') {
-    spawned = spawnWorker(cfg.workDir, 'planner');
-    log('info', 'Spawned planner worker', { pid: spawned.pid });
-  } else if (action === 'refiner') {
-    spawned = spawnWorker(cfg.workDir, 'refiner');
-    log('info', 'Spawned refiner worker', { pid: spawned.pid });
-  } else {
-    spawned = spawnWorker(cfg.workDir, 'implementer');
-    log('info', 'Spawned implementer worker', { pid: spawned.pid });
-  }
+  const spawned = spawnWorker(cfg.workDir, action);
+  log('info', `Spawned ${action} worker`, { pid: spawned.pid });
 
   if (spawned.pid < 0) {
     log('warn', `Failed to get PID for ${action} worker`);
@@ -374,35 +309,6 @@ async function doSpawn(
   ];
 
   return spawned;
-}
-
-// ---------------------------------------------------------------------------
-// Full-backlog planning
-// ---------------------------------------------------------------------------
-
-async function runFullBacklogPlan(
-  cfg: ConductorConfig,
-  state: ConductorState,
-  log: LogFn,
-): Promise<void> {
-  const description =
-    'Full backlog review: deduplicate tasks, organize dependencies, groom priorities, cancel obsolete tasks, split large tasks into subtasks';
-
-  const taskId = await enqueuePlannerTask(cfg.workDir, description, 100);
-  log('info', 'Enqueued full-backlog planner task', { taskId });
-
-  const spawned = spawnWorker(cfg.workDir, 'planner', taskId);
-  log('info', 'Spawned planner worker for full-backlog review', {
-    pid: spawned.pid,
-    taskId,
-  });
-
-  state.lastFullPlanAt = new Date().toISOString();
-  state.stats.fullPlansRun++;
-  state.activeWorkers = [
-    ...state.activeWorkers.filter((w) => isStillRunning(w.pid)),
-    spawned,
-  ];
 }
 
 // ---------------------------------------------------------------------------

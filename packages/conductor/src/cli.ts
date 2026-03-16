@@ -68,14 +68,12 @@ program
   .command('start')
   .description('Start the conductor daemon in the background')
   .option('-n, --max-workers <n>', 'Maximum concurrent workers', '3')
-  .option('-x, --batch-plan-threshold <n>', 'Tasks since last plan before triggering full-backlog planning', '20')
   .option('--poll-interval <seconds>', 'Seconds between ticks', '30')
   .option('--stale-after <duration>', 'Reap tasks stale longer than this (e.g. 30m)', '30m')
   .option('--alert-webhook <url>', 'Webhook URL for urgent alerts (Slack/Discord/ntfy.sh/etc.)')
   .option('--workdir <path>', 'Working directory (default: $WORK_DIR or cwd)')
   .action(async (opts: {
     maxWorkers: string;
-    batchPlanThreshold: string;
     pollInterval: string;
     staleAfter: string;
     alertWebhook?: string;
@@ -99,7 +97,6 @@ program
         ...process.env,
         WORK_DIR: workDir,
         CONDUCTOR_MAX_WORKERS: opts.maxWorkers,
-        CONDUCTOR_BATCH_PLAN_THRESHOLD: opts.batchPlanThreshold,
         CONDUCTOR_POLL_INTERVAL: opts.pollInterval,
         CONDUCTOR_STALE_AFTER: opts.staleAfter,
         ...(opts.alertWebhook ? { CONDUCTOR_ALERT_WEBHOOK: opts.alertWebhook } : {}),
@@ -195,13 +192,11 @@ program
         : '';
       console.log(`  Phase:        ${state.phase}${up ? `  (${up})` : ''}`);
       console.log(`  Last tick:    ${state.lastTickAt ? new Date(state.lastTickAt).toLocaleString() : 'never'}`);
-      console.log(`  Last plan:    ${state.lastFullPlanAt ? new Date(state.lastFullPlanAt).toLocaleString() : 'never'}`);
       console.log();
       console.log('  Stats:');
       console.log(`    Ticks run:       ${state.stats.tickCount}`);
       console.log(`    Workers spawned: ${state.stats.workersSpawned}`);
       console.log(`    Tasks reaped:    ${state.stats.tasksReaped}`);
-      console.log(`    Full plans run:  ${state.stats.fullPlansRun}`);
 
       if (state.activeWorkers.length > 0) {
         console.log();

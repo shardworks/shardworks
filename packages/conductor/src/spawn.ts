@@ -49,25 +49,6 @@ export async function reapStale(workDir: string, staleAfter: string): Promise<Re
   return runTq<ReapResult>(workDir, ['reap', '--stale-after', staleAfter, '--release']);
 }
 
-export interface EnqueueResult {
-  id: string;
-}
-
-/** Enqueue a task ready for claiming (skips draft state). */
-export async function enqueuePlannerTask(
-  workDir: string,
-  description: string,
-  priority = 100,
-): Promise<string> {
-  const result = await runTq<EnqueueResult>(workDir, [
-    'enqueue', description,
-    '--assigned-role', 'planner',
-    '--priority', String(priority),
-    '--ready',
-  ]);
-  return result.id;
-}
-
 // ---------------------------------------------------------------------------
 // Worker spawning
 // ---------------------------------------------------------------------------
@@ -90,10 +71,8 @@ export interface SpawnedWorker {
 export function spawnWorker(
   workDir: string,
   role: string,
-  taskId?: string,
 ): SpawnedWorker {
   const args: string[] = ['--role', role];
-  if (taskId) args.push('--task-id', taskId);
 
   const child = spawn('worker', args, {
     cwd: workDir,
@@ -109,7 +88,7 @@ export function spawnWorker(
   return {
     pid: child.pid ?? -1,
     role,
-    taskId: taskId ?? null,
+    taskId: null,
     startedAt: new Date().toISOString(),
   };
 }
