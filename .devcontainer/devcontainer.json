@@ -23,11 +23,11 @@
     // "ghcr.io/devcontainers/features/docker-in-docker:2": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {
-      "version": "lts/krypton"
+      "version": "24"
     },
     "ghcr.io/devcontainers/features/python:1": {}
   },
-  "forwardPorts": [],
+  "forwardPorts": [3001],
   "portsAttributes": {},
   "init": true,
   "initializeCommand": ".devcontainer/host-scripts/initialize.sh",

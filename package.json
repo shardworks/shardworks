@@ -1,0 +1,10 @@
+{
+  "name": "shardworks",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev -w packages/queue-server",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

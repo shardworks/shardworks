@@ -1,1 +1,5 @@
 .devcontainer/logs/
+node_modules/
+packages/*/dist/
+packages/*/node_modules/
+**/*.tsbuildinfo
