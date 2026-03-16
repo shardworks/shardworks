@@ -1434,6 +1434,117 @@ export async function reap(staleAfterMs: number, doRelease = false): Promise<Rea
 }
 
 // ---------------------------------------------------------------------------
+// T-release-timed-out — Auto-release tasks whose timeout_seconds has elapsed
+// ---------------------------------------------------------------------------
+
+export interface ReleaseTimedOutResult {
+  /** Tasks that were found timed out. */
+  timed_out: Task[];
+  /** Tasks re-queued as eligible (attempts remaining). */
+  released: Task[];
+  /** Tasks moved to failed (attempts exhausted). */
+  failed: Task[];
+}
+
+/**
+ * Find all in_progress tasks where timeout_seconds IS NOT NULL and
+ * claimed_at + INTERVAL timeout_seconds SECOND < NOW().
+ *
+ * For each timed-out task:
+ *  - Increments attempt_count.
+ *  - If attempts remain  → status = 'eligible', eligible_at = NOW(),
+ *    result_payload = { error: 'timeout', attempt, retrying: true }.
+ *  - If attempts exhausted → status = 'failed',
+ *    result_payload = { error: 'timeout' }, cascadeBlocked().
+ *
+ * Safe to run via cron or as an operator command; no daemon required.
+ */
+export async function releaseTimedOut(): Promise<ReleaseTimedOutResult> {
+  return withCommit('[release-timed-out] auto-release timed-out in_progress tasks', async conn => {
+    // Fetch all in_progress tasks whose timeout window has elapsed.
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks
+       WHERE status = 'in_progress'
+         AND timeout_seconds IS NOT NULL
+         AND claimed_at + INTERVAL timeout_seconds SECOND < NOW()
+       ORDER BY claimed_at ASC
+       FOR UPDATE`,
+    );
+
+    if (rows.length === 0) {
+      return { timed_out: [], released: [], failed: [] };
+    }
+
+    const now = new Date();
+    const releasedRows: TaskRow[] = [];
+    const failedRows: TaskRow[] = [];
+
+    for (const row of rows) {
+      const newAttemptCount = (row.attempt_count ?? 0) + 1;
+      const maxAttempts = row.max_attempts ?? 1;
+
+      if (newAttemptCount < maxAttempts) {
+        // Attempts remain — backoff and return to eligible
+        const backoffMs = Math.pow(2, newAttemptCount - 1) * 30_000;
+        const eligibleAt = new Date(now.getTime() + backoffMs);
+        const resultPayload = { error: 'timeout', attempt: newAttemptCount, retrying: true };
+        await conn.execute(
+          `UPDATE tasks
+           SET status = 'eligible',
+               attempt_count = ?,
+               eligible_at = ?,
+               result_payload = ?,
+               claimed_by = NULL,
+               claimed_at = NULL,
+               completed_at = NULL
+           WHERE id = ?`,
+          [newAttemptCount, eligibleAt, JSON.stringify(resultPayload), row.id],
+        );
+        releasedRows.push({
+          ...row,
+          status: 'eligible',
+          attempt_count: newAttemptCount,
+          eligible_at: eligibleAt,
+          result_payload: resultPayload,
+          claimed_by: null,
+          claimed_at: null,
+          completed_at: null,
+        });
+      } else {
+        // Attempts exhausted — terminal failure
+        const resultPayload = { error: 'timeout' };
+        await conn.execute(
+          `UPDATE tasks
+           SET status = 'failed',
+               attempt_count = ?,
+               result_payload = ?,
+               completed_at = ?
+           WHERE id = ?`,
+          [newAttemptCount, JSON.stringify(resultPayload), now, row.id],
+        );
+        await cascadeBlocked(conn, row.id);
+        failedRows.push({
+          ...row,
+          status: 'failed',
+          attempt_count: newAttemptCount,
+          result_payload: resultPayload,
+          completed_at: now,
+        });
+      }
+    }
+
+    const allIds = rows.map(r => r.id);
+    const depsMap = await attachDeps(conn, allIds);
+
+    const timed_out = rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+    const released = releasedRows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+    const failed = failedRows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+
+    return { timed_out, released, failed };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Typed Relationships (FR-7, FR-21) — non-scheduling annotated edges
 // ---------------------------------------------------------------------------
 
