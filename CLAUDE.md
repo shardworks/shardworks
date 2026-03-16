@@ -15,7 +15,7 @@ tq show <id>
 tq dep-results <id>
 
 # List tasks with optional filters
-tq list [--status pending|eligible|in_progress|completed|failed] [--parent <id>] [--created-by <id>]
+tq list [--status draft|pending|eligible|in_progress|completed|failed] [--parent <id>] [--created-by <id>]
 
 # List all currently claimable tasks, highest priority first
 tq ready
@@ -29,6 +29,9 @@ tq subtree <id>
 ```bash
 # Atomically claim the highest-priority eligible task for an agent (eligible → in_progress)
 tq claim --agent <agent-id>
+
+# Claim the highest-priority draft task for refinement (draft → in_progress)
+tq claim --draft --agent <agent-id>
 ```
 
 ### Terminal state (worker agent)
@@ -44,32 +47,51 @@ tq fail <id> --agent <agent-id> --reason '<text>'
 The `--agent` value must match the `claimed_by` field set during `tq claim`.
 Use `-r` or `--result` for the result payload on `tq complete`.
 
+### Task-refiner agent
+
+Draft tasks are claimed and refined by special task-refiner agents. After refining
+(adding detail, splitting into sub-tasks, etc.) the refiner publishes the ticket:
+
+```bash
+# Mark a draft task as ready (in_progress → eligible or pending based on deps)
+tq publish <id> --agent <agent-id>
+```
+
+`tq publish` transitions the task to `eligible` (if all dependencies are complete)
+or `pending` (if it still has incomplete dependencies), making it available to
+regular worker agents.
+
 ### Create tasks
 
 ```bash
-# Enqueue a single task
+# Enqueue a single task (created as 'draft' by default)
 tq enqueue "<description>" \
   [--payload '<json>'] \
   [--depends-on <id>] \   # repeatable
   [--parent <id>] \
   [--priority <n>] \      # higher = claimed first; default 0
-  [--created-by <id>]
+  [--created-by <id>] \
+  [--ready]               # skip draft; create as eligible/pending immediately
 
 # Batch-enqueue a task graph from a JSON file (or stdin with -)
 tq batch <file>
-tq batch -   # reads from stdin
+tq batch -          # reads from stdin
+tq batch <file> --ready  # skip draft for all tasks in the batch
 ```
 
 ### Task status lifecycle
 
 ```
-pending → eligible → in_progress → completed
-                                 → failed
+draft → (task-refiner claims) → in_progress → (publish) → pending → eligible → in_progress → completed
+                                                                   ↗                        → failed
+                                            → (publish, no deps)  → eligible
 ```
 
-A task starts as `eligible` if it has no dependencies, otherwise `pending`.
-When all dependencies complete, the task becomes `eligible`.
-`tq claim` transitions `eligible` → `in_progress`.
+New tasks start as `draft` unless `--ready` is passed.
+`tq claim --draft` transitions `draft` → `in_progress` (for task-refiners only).
+`tq publish` transitions `in_progress` → `eligible` or `pending` (based on deps).
+`tq claim` transitions `eligible` → `in_progress` (for regular workers).
+When all dependencies of a `pending` task complete, it becomes `eligible`.
 
 ### Skills
 

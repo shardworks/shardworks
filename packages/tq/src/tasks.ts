@@ -132,7 +132,9 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
       ? generateChildId(input.parent_id, input.description, input.created_by, now)
       : generateId(input.description, input.created_by, now);
 
-    const status: TaskStatus = deps.length === 0 ? 'eligible' : 'pending';
+    const status: TaskStatus = input.skipDraft
+      ? (deps.length === 0 ? 'eligible' : 'pending')
+      : 'draft';
     const eligibleAt = status === 'eligible' ? now : null;
 
     await conn.execute(
@@ -388,7 +390,9 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 
       clientToRealId.set(clientId, id);
 
-      const status: TaskStatus = deps.length === 0 ? 'eligible' : 'pending';
+      const status: TaskStatus = input.skipDraft
+        ? (deps.length === 0 ? 'eligible' : 'pending')
+        : 'draft';
       const eligibleAt = status === 'eligible' ? taskTime : null;
 
       await conn.execute(
@@ -441,14 +445,18 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 // T09 — Claim (no tag routing for MVP)
 // ---------------------------------------------------------------------------
 
-export async function claim(agentId: string): Promise<ClaimResult> {
-  return withCommit(`[claim] by ${agentId}`, async conn => {
-    // Lock the highest-priority eligible task
+export async function claim(agentId: string, draft = false): Promise<ClaimResult> {
+  const targetStatus = draft ? 'draft' : 'eligible';
+  const orderBy = draft
+    ? 'priority DESC, created_at ASC'
+    : 'priority DESC, eligible_at ASC';
+  return withCommit(`[claim${draft ? '-draft' : ''}] by ${agentId}`, async conn => {
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks WHERE status = 'eligible'
-       ORDER BY priority DESC, eligible_at ASC
+      `SELECT * FROM tasks WHERE status = ?
+       ORDER BY ${orderBy}
        LIMIT 1
        FOR UPDATE`,
+      [targetStatus],
     );
 
     if (rows.length === 0) return { task: null };
@@ -538,6 +546,52 @@ export async function fail(
 }
 
 // ---------------------------------------------------------------------------
+// Publish — task-refiner marks a draft task ready for regular workers
+// ---------------------------------------------------------------------------
+
+/**
+ * Transitions a draft task from in_progress → eligible or pending.
+ * Called by task-refiner agents after they have refined a ticket.
+ * The agent must be the one that claimed the task.
+ */
+export async function publish(taskId: string, agentId: string): Promise<Task> {
+  return withCommit(`[publish] ${taskId} by ${agentId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = rows[0]!;
+    if (row.status !== 'in_progress') throw new Error(`Task ${taskId} is not in_progress (status: ${row.status})`);
+    if (row.claimed_by !== agentId) throw new Error(`Task ${taskId} is not claimed by ${agentId}`);
+
+    // Determine eligibility based on whether all existing dependencies are completed
+    const [depRows] = await conn.execute<RowDataPacket[]>(
+      `SELECT t.status
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.dep_id
+       WHERE td.task_id = ?`,
+      [taskId],
+    );
+    const allDone = depRows.length === 0 || depRows.every(r => r.status === 'completed');
+    const now = new Date();
+    const newStatus: TaskStatus = allDone ? 'eligible' : 'pending';
+    const eligibleAt = allDone ? now : null;
+
+    await conn.execute(
+      `UPDATE tasks SET status = ?, eligible_at = ?, claimed_by = NULL, claimed_at = NULL WHERE id = ?`,
+      [newStatus, eligibleAt, taskId],
+    );
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      { ...row, status: newStatus, eligible_at: eligibleAt, claimed_by: null, claimed_at: null },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // T12 — Subtree + ready
 // ---------------------------------------------------------------------------
 
@@ -568,7 +622,7 @@ export async function subtree(parentId: string): Promise<SubtreeResult> {
     const tasks = rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
 
     const rollup: StatusRollup = {
-      pending: 0, eligible: 0, in_progress: 0, completed: 0, failed: 0, total: tasks.length,
+      draft: 0, pending: 0, eligible: 0, in_progress: 0, completed: 0, failed: 0, total: tasks.length,
     };
     for (const t of tasks) rollup[t.status]++;
 

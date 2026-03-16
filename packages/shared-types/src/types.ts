@@ -1,4 +1,5 @@
 export type TaskStatus =
+  | 'draft'
   | 'pending'
   | 'eligible'
   | 'in_progress'
@@ -24,6 +25,7 @@ export interface Task {
 }
 
 export interface StatusRollup {
+  draft: number;
   pending: number;
   eligible: number;
   in_progress: number;

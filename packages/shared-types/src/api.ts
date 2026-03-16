@@ -10,6 +10,11 @@ export interface EnqueueInput {
   parent_id?: string;
   priority?: number;
   created_by: string;
+  /**
+   * When true, skip the draft status and create the task as eligible/pending
+   * immediately (based on whether it has dependencies). Default: false.
+   */
+  skipDraft?: boolean;
 }
 
 /**
@@ -26,6 +31,8 @@ export interface BatchTaskInput extends Omit<EnqueueInput, 'created_by'> {
 export interface BatchEnqueueInput {
   tasks: BatchTaskInput[];
   created_by: string;
+  /** When true, all tasks in the batch skip draft and are created eligible/pending. */
+  skipDraft?: boolean;
 }
 
 export interface ClaimInput {
@@ -40,6 +47,10 @@ export interface CompleteInput {
 export interface FailInput {
   agent_id: string;
   reason: string;
+}
+
+export interface PublishInput {
+  agent_id: string;
 }
 
 // ---- Responses -------------------------------------------------------------

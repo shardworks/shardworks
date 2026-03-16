@@ -12,6 +12,7 @@ import {
   claim,
   complete,
   fail,
+  publish,
   subtree,
   ready,
   getDepResults,
@@ -68,15 +69,16 @@ const program = new Command()
 
 program
   .command('enqueue <description>')
-  .description('Enqueue a single task')
+  .description('Enqueue a single task (created as draft by default)')
   .option('-p, --payload <json>', 'JSON payload for the agent')
   .option('--depends-on <id>', 'Dependency task ID (repeatable)', collect, [] as string[])
   .option('--parent <id>', 'Parent task ID')
   .option('--priority <n>', 'Priority — higher is claimed first', (v) => parseInt(v, 10), 0)
   .option('--created-by <id>', 'Creator identifier', DEFAULT_CREATED_BY)
+  .option('--ready', 'Skip draft status; make the task eligible/pending immediately')
   .action(async (description: string, opts: {
     payload?: string; dependsOn: string[]; parent?: string;
-    priority: number; createdBy: string;
+    priority: number; createdBy: string; ready?: boolean;
   }) => {
     await run(async () => {
       const input: EnqueueInput = {
@@ -86,6 +88,7 @@ program
         dependencies: opts.dependsOn,
         parent_id: opts.parent,
         payload: opts.payload ? JSON.parse(opts.payload) : undefined,
+        skipDraft: opts.ready ?? false,
       };
       return enqueue(input);
     });
@@ -97,13 +100,15 @@ program
   .command('batch <file>')
   .description('Batch-enqueue a task graph from a JSON file (use - for stdin)')
   .option('--created-by <id>', 'Creator identifier', DEFAULT_CREATED_BY)
-  .action(async (file: string, opts: { createdBy: string }) => {
+  .option('--ready', 'Skip draft status; make all tasks eligible/pending immediately')
+  .action(async (file: string, opts: { createdBy: string; ready?: boolean }) => {
     await run(async () => {
       const raw = file === '-'
         ? readFileSync('/dev/stdin', 'utf8')
         : readFileSync(file, 'utf8');
       const input = JSON.parse(raw) as BatchEnqueueInput;
       if (!input.created_by) input.created_by = opts.createdBy;
+      if (opts.ready) input.skipDraft = true;
       return batchEnqueue(input);
     });
   });
@@ -112,10 +117,11 @@ program
 
 program
   .command('claim')
-  .description('Claim the next eligible task')
+  .description('Claim the next eligible task (use --draft to claim draft tasks for refinement)')
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
-  .action(async (opts: { agent: string }) => {
-    await run(() => claim(opts.agent));
+  .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
+  .action(async (opts: { agent: string; draft?: boolean }) => {
+    await run(() => claim(opts.agent, opts.draft ?? false));
   });
 
 // ── tq complete ─────────────────────────────────────────────────────────────
@@ -142,12 +148,22 @@ program
     await run(() => fail(id, opts.agent, opts.reason));
   });
 
+// ── tq publish ──────────────────────────────────────────────────────────────
+
+program
+  .command('publish <id>')
+  .description('Mark a draft task as ready (transition to eligible/pending) — for task-refiner agents')
+  .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
+  .action(async (id: string, opts: { agent: string }) => {
+    await run(() => publish(id, opts.agent));
+  });
+
 // ── tq list ─────────────────────────────────────────────────────────────────
 
 program
   .command('list')
   .description('List tasks')
-  .option('--status <status>', 'Filter by status (pending|eligible|in_progress|completed|failed)')
+  .option('--status <status>', 'Filter by status (draft|pending|eligible|in_progress|completed|failed)')
   .option('--parent <id>', 'Filter by parent ID (pass empty string for root tasks)')
   .option('--created-by <id>', 'Filter by creator')
   .action(async (opts: { status?: string; parent?: string; createdBy?: string }) => {
