@@ -11,10 +11,9 @@ export interface RoleDefinition {
   /**
    * Claim pool selection:
    *   true  — claim from the 'draft' pool (refiner roles)
-   *   false — claim from the 'eligible' pool (implementer roles)
-   *   null  — don't claim any task; work on the whole backlog (planner roles)
+   *   false — claim from the 'eligible' pool (implementer / planner roles)
    */
-  claimDraft: boolean | null;
+  claimDraft: boolean;
   /**
    * System prompt lines. Supports template variables:
    *   {{agentId}}  — the agent's ID

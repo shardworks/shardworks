@@ -30,6 +30,10 @@ tq subtree <id>
 # Atomically claim the highest-priority eligible task for an agent (eligible → in_progress)
 tq claim --agent <agent-id>
 
+# Claim the highest-priority eligible task for a specific role
+# (matches tasks with that assigned_role, or tasks with no assigned_role)
+tq claim --agent <agent-id> --role <role>
+
 # Claim the highest-priority draft task for refinement (draft → in_progress)
 tq claim --draft --agent <agent-id>
 ```
@@ -71,6 +75,7 @@ tq enqueue "<description>" \
   [--parent <id>] \
   [--priority <n>] \      # higher = claimed first; default 0
   [--created-by <id>] \
+  [--assigned-role <role>] \  # route to a specific worker role
   [--ready]               # skip draft; create as eligible/pending immediately
 
 # Batch-enqueue a task graph from a JSON file (or stdin with -)
@@ -109,7 +114,7 @@ tq unlink <task-id> <dep-id> [--agent <id>]
 tq reparent <task-id> <new-parent-id|root> [--agent <id>]
 
 # Edit task metadata (at least one field required)
-tq edit <task-id> [--description <text>] [-p <json>] [--priority <n>] [--agent <id>]
+tq edit <task-id> [--description <text>] [-p <json>] [--priority <n>] [--assigned-role <role>] [--agent <id>]
 
 # Cancel a task without claiming (for duplicates / obsolete tasks)
 tq cancel <task-id> --reason '<text>' [--agent <id>]
@@ -131,28 +136,28 @@ requires only a JSON edit — no code change.
 Each role specifies:
 - `id` — role name, passed as `--role` to the worker
 - `description` — human-readable summary (for conductors selecting a role)
-- `claimDraft` — `true` for draft pool, `false` for eligible pool, `null` for no claim (planner)
+- `claimDraft` — `true` for draft pool, `false` for eligible pool
 - `systemPrompt` / `workPrompt` — arrays of lines, joined with `\n`
 
 **Template variables** available in prompts:
 - `{{agentId}}` — the agent's ID
-- `{{taskId}}` — the task being worked on (or `__backlog__` for planners)
+- `{{taskId}}` — the task being worked on
 - `{{tagsLine}}` — `\nCapability tags: foo, bar` or empty string
 
 **Built-in roles:**
 
 | Role | Claims | Action |
 |------|--------|--------|
-| `implementer` | `eligible` tasks | Does the work → `tq complete` / `tq fail` |
+| `implementer` | `eligible` tasks (no assigned_role or assigned_role=implementer) | Does the work → `tq complete` / `tq fail` |
 | `refiner` | `draft` tasks | Refines one ticket → `tq publish` |
-| `planner` | nothing | Cross-task refinement: dedup, link, reparent, edit, cancel |
+| `planner` | `eligible` tasks with assigned_role=planner | Cross-task refinement → `tq complete` with summary |
 
 **Launching a worker with a role:**
 
 ```bash
 worker --role implementer      # one-shot implementer (default)
 worker --role refiner          # one-shot refiner
-worker --role planner          # one-shot planner (reviews whole backlog)
+worker --role planner          # one-shot planner (claims planner-assigned task)
 WORKER_ROLE=planner worker     # via env var
 ```
 

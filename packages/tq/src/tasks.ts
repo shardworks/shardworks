@@ -26,6 +26,7 @@ interface TaskRow extends RowDataPacket {
   result_payload: unknown;
   created_by: string;
   claimed_by: string | null;
+  assigned_role: string | null;
   created_at: Date;
   eligible_at: Date | null;
   claimed_at: Date | null;
@@ -64,6 +65,7 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
     result_payload: parseJson(row.result_payload),
     created_by: row.created_by,
     claimed_by: row.claimed_by ?? null,
+    assigned_role: row.assigned_role ?? null,
     created_at: row.created_at,
     eligible_at: row.eligible_at ?? null,
     claimed_at: row.claimed_at ?? null,
@@ -139,8 +141,8 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
 
     await conn.execute(
       `INSERT INTO tasks
-         (id, description, payload, status, parent_id, priority, created_by, created_at, eligible_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.description,
@@ -149,6 +151,7 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
         input.parent_id ?? null,
         input.priority ?? 0,
         input.created_by,
+        input.assigned_role ?? null,
         now,
         eligibleAt,
       ],
@@ -170,6 +173,7 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
         result_payload: null,
         created_by: input.created_by,
         claimed_by: null,
+        assigned_role: input.assigned_role ?? null,
         created_at: now,
         eligible_at: eligibleAt,
         claimed_at: null,
@@ -406,8 +410,8 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 
       await conn.execute(
         `INSERT INTO tasks
-           (id, description, payload, status, parent_id, priority, created_by, created_at, eligible_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           t.description,
@@ -416,6 +420,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
           t.parent_id ?? null,
           t.priority ?? 0,
           input.created_by,
+          t.assigned_role ?? null,
           taskTime,
           eligibleAt,
         ],
@@ -437,6 +442,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
           result_payload: null,
           created_by: input.created_by,
           claimed_by: null,
+          assigned_role: t.assigned_role ?? null,
           created_at: taskTime,
           eligible_at: eligibleAt,
           claimed_at: null,
@@ -454,18 +460,26 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 // T09 — Claim (no tag routing for MVP)
 // ---------------------------------------------------------------------------
 
-export async function claim(agentId: string, draft = false): Promise<ClaimResult> {
+export async function claim(agentId: string, draft = false, role?: string): Promise<ClaimResult> {
   const targetStatus = draft ? 'draft' : 'eligible';
   const orderBy = draft
     ? 'priority DESC, created_at ASC'
     : 'priority DESC, eligible_at ASC';
+
+  // Role filter: if a role is specified, match tasks with that assigned_role OR no assigned_role.
+  // If no role is specified, only match tasks with no assigned_role (backward-compatible).
+  const roleCondition = role
+    ? '(assigned_role IS NULL OR assigned_role = ?)'
+    : 'assigned_role IS NULL';
+  const roleParams = role ? [role] : [];
+
   return withCommit(`[claim${draft ? '-draft' : ''}] by ${agentId}`, async conn => {
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks WHERE status = ?
+      `SELECT * FROM tasks WHERE status = ? AND ${roleCondition}
        ORDER BY ${orderBy}
        LIMIT 1
        FOR UPDATE`,
-      [targetStatus],
+      [targetStatus, ...roleParams],
     );
 
     if (rows.length === 0) return { task: null };
@@ -802,10 +816,10 @@ export async function reparent(taskId: string, newParentId: string | null, actor
 export async function edit(
   taskId: string,
   actor: string,
-  updates: { description?: string; payload?: unknown; priority?: number },
+  updates: { description?: string; payload?: unknown; priority?: number; assigned_role?: string | null },
 ): Promise<Task> {
-  if (updates.description === undefined && updates.payload === undefined && updates.priority === undefined) {
-    throw new Error('At least one of description, payload, or priority must be provided');
+  if (updates.description === undefined && updates.payload === undefined && updates.priority === undefined && updates.assigned_role === undefined) {
+    throw new Error('At least one of description, payload, priority, or assigned_role must be provided');
   }
 
   return withCommit(`[edit] ${taskId} by ${actor}`, async conn => {
@@ -822,7 +836,7 @@ export async function edit(
     }
 
     const sets: string[] = [];
-    const params: (string | number)[] = [];
+    const params: (string | number | null)[] = [];
     if (updates.description !== undefined) {
       sets.push('description = ?');
       params.push(updates.description);
@@ -837,6 +851,11 @@ export async function edit(
       sets.push('priority = ?');
       params.push(updates.priority);
       row.priority = updates.priority;
+    }
+    if (updates.assigned_role !== undefined) {
+      sets.push('assigned_role = ?');
+      params.push(updates.assigned_role);
+      row.assigned_role = updates.assigned_role;
     }
     params.push(taskId);
 

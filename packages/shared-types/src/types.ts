@@ -16,6 +16,8 @@ export interface Task {
   result_payload: unknown | null;
   created_by: string;
   claimed_by: string | null;
+  /** Optional role that must match the claiming worker's role. Null means any role. */
+  assigned_role: string | null;
   created_at: Date;
   eligible_at: Date | null;
   claimed_at: Date | null;

@@ -4,16 +4,18 @@
   "private": true,
   "type": "module",
   "bin": {
-    "worker": "./dist/index.js"
+    "worker": "./bin/worker"
   },
   "scripts": {
     "build": "tsc --build",
     "dev": "tsx src/index.ts",
     "clean": "rm -rf dist"
   },
+  "dependencies": {
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.9.0"
   }
 }

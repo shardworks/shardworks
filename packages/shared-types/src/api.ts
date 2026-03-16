@@ -15,6 +15,8 @@ export interface EnqueueInput {
    * immediately (based on whether it has dependencies). Default: false.
    */
   skipDraft?: boolean;
+  /** Optional role that should complete this task (e.g. 'planner', 'implementer'). */
+  assigned_role?: string;
 }
 
 /**
@@ -26,6 +28,8 @@ export interface EnqueueInput {
 export interface BatchTaskInput extends Omit<EnqueueInput, 'created_by'> {
   client_id: string;
   dependencies?: string[];
+  /** Optional role that should complete this task (e.g. 'planner', 'implementer'). */
+  assigned_role?: string;
 }
 
 export interface BatchEnqueueInput {

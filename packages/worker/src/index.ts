@@ -15,15 +15,12 @@ async function main(): Promise<void> {
 
   if (config.mode === 'conducted') {
     conducted = config;
-  } else if (role.claimDraft === null) {
-    // Planner mode: no task to claim — work on the whole backlog.
-    conducted = { ...config, mode: 'conducted', taskId: '__backlog__' };
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
-    const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft);
+    const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft, role.id);
     if (taskId === null) {
       const pool = role.claimDraft ? 'draft' : 'eligible';
-      process.stderr.write(`worker: no ${pool} tasks (role: ${role.id})\n`);
+      process.stderr.write(`worker: no ${pool} tasks for role "${role.id}" (agent: ${config.agentId})\n`);
       process.exit(0);
     }
     conducted = { ...config, mode: 'conducted', taskId };

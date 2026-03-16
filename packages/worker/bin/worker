@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REAL="$(readlink -f "${BASH_SOURCE[0]}")"
+DIR="$(cd "$(dirname "$REAL")" && pwd)"
+
+find_tsx() {
+  local d="$DIR"
+  while [ "$d" != "/" ]; do
+    if [ -x "$d/node_modules/.bin/tsx" ]; then
+      echo "$d/node_modules/.bin/tsx"; return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
+TSX="$(find_tsx 2>/dev/null || true)"
+if [ -n "$TSX" ]; then
+  exec "$TSX" "$DIR/../src/index.ts" "$@"
+else
+  exec node "$DIR/../dist/index.js" "$@"
+fi

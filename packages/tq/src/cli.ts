@@ -82,9 +82,10 @@ program
   .option('--priority <n>', 'Priority — higher is claimed first', (v) => parseInt(v, 10), 0)
   .option('--created-by <id>', 'Creator identifier', DEFAULT_CREATED_BY)
   .option('--ready', 'Skip draft status; make the task eligible/pending immediately')
+  .option('--assigned-role <role>', 'Role that should complete this task (e.g. planner, implementer)')
   .action(async (description: string, opts: {
     payload?: string; dependsOn: string[]; parent?: string;
-    priority: number; createdBy: string; ready?: boolean;
+    priority: number; createdBy: string; ready?: boolean; assignedRole?: string;
   }) => {
     await run(async () => {
       const input: EnqueueInput = {
@@ -95,6 +96,7 @@ program
         parent_id: opts.parent,
         payload: opts.payload ? JSON.parse(opts.payload) : undefined,
         skipDraft: opts.ready ?? false,
+        assigned_role: opts.assignedRole,
       };
       return enqueue(input);
     });
@@ -126,8 +128,9 @@ program
   .description('Claim the next eligible task (use --draft to claim draft tasks for refinement)')
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
-  .action(async (opts: { agent: string; draft?: boolean }) => {
-    await run(() => claim(opts.agent, opts.draft ?? false));
+  .option('--role <role>', 'Only claim tasks assigned to this role (or unassigned tasks)')
+  .action(async (opts: { agent: string; draft?: boolean; role?: string }) => {
+    await run(() => claim(opts.agent, opts.draft ?? false, opts.role));
   });
 
 // ── tq claim-id ─────────────────────────────────────────────────────────────
@@ -210,18 +213,22 @@ program
 
 program
   .command('edit <task-id>')
-  .description('Edit a task\'s description, payload, or priority (draft/pending/eligible only)')
+  .description('Edit a task\'s description, payload, priority, or assigned_role (draft/pending/eligible only)')
   .option('--description <text>', 'New description')
   .option('-p, --payload <json>', 'New payload (JSON)')
   .option('--priority <n>', 'New priority', (v) => parseInt(v, 10))
+  .option('--assigned-role <role>', 'New assigned role (use "none" to clear)')
   .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
   .action(async (taskId: string, opts: {
-    description?: string; payload?: string; priority?: number; agent: string;
+    description?: string; payload?: string; priority?: number; assignedRole?: string; agent: string;
   }) => {
     await run(() => edit(taskId, opts.agent, {
       description: opts.description,
       payload: opts.payload ? JSON.parse(opts.payload) : undefined,
       priority: opts.priority,
+      assigned_role: opts.assignedRole !== undefined
+        ? (opts.assignedRole === 'none' ? null : opts.assignedRole)
+        : undefined,
     }));
   });
 

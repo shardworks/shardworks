@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "tq": "./dist/cli.js"
+    "tq": "./bin/tq"
   },
   "scripts": {
     "build": "tsc --build",
@@ -14,11 +14,11 @@
   "dependencies": {
     "@shardworks/shared-types": "*",
     "commander": "^12.0.0",
-    "mysql2": "^3.11.0"
+    "mysql2": "^3.11.0",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.9.0"
   }
 }

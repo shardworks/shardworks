@@ -22,12 +22,14 @@ function exec(cmd: string, args: string[], cwd: string): Promise<ExecResult> {
  * Atomically claims the next task for the given agent.
  * Pass claimDraft=true to claim from the draft pool (for refiner roles);
  * false (default) claims from the eligible pool (for implementer roles).
+ * Pass role to filter tasks by assigned_role.
  *
  * Returns the claimed task ID, or null if no suitable task is available.
  */
-export async function claimTask(agentId: string, workDir: string, claimDraft = false): Promise<string | null> {
+export async function claimTask(agentId: string, workDir: string, claimDraft = false, role?: string): Promise<string | null> {
   const args = ['claim', '--agent', agentId];
   if (claimDraft) args.push('--draft');
+  if (role) args.push('--role', role);
   const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
   if (exitCode !== 0) {
     throw new Error(`tq claim failed: ${stderr.trim() || stdout.trim()}`);

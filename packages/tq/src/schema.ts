@@ -11,6 +11,7 @@ const STATEMENTS = [
     result_payload JSON,
     created_by     VARCHAR(255) NOT NULL,
     claimed_by     VARCHAR(255),
+    assigned_role  VARCHAR(64),
     created_at     DATETIME(3)  NOT NULL,
     eligible_at    DATETIME(3),
     claimed_at     DATETIME(3),
@@ -23,11 +24,27 @@ const STATEMENTS = [
   )`,
 ];
 
+/** Migrations that may fail if already applied (e.g. column already exists). */
+const MIGRATIONS = [
+  `ALTER TABLE tasks ADD COLUMN assigned_role VARCHAR(64) AFTER claimed_by`,
+];
+
 export async function initSchema(): Promise<void> {
   const conn = await pool.getConnection();
   try {
     for (const sql of STATEMENTS) {
       await conn.execute(sql);
+    }
+    for (const sql of MIGRATIONS) {
+      try {
+        await conn.execute(sql);
+      } catch (err: unknown) {
+        // Ignore "already exists" errors — column already exists from a prior migration
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.toLowerCase().includes('already exists')) {
+          throw err;
+        }
+      }
     }
   } finally {
     conn.release();
