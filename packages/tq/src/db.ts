@@ -48,14 +48,21 @@ export async function withCommit<T>(
   try {
     const result = await withTransaction(conn, fn);
     try {
-      await conn.execute("CALL dolt_add('-A')");
-      await conn.execute(
-        'CALL dolt_commit(?, ?, ?, ?)',
-        ['-m', commitMessage, '--author', 'Queue Server <queue@shardworks>'],
+      // Guard: only commit if there are actual changes in the working set.
+      const [statusRows] = await conn.execute<mysql.RowDataPacket[]>(
+        'SELECT COUNT(*) AS cnt FROM dolt_status',
       );
+      const dirty = (statusRows[0]?.cnt ?? 0) > 0;
+      if (dirty) {
+        await conn.execute("CALL dolt_add('-A')");
+        await conn.execute(
+          'CALL dolt_commit(?, ?, ?, ?)',
+          ['-m', commitMessage, '--author', 'Queue Server <queue@shardworks>'],
+        );
+      }
     } catch (commitErr) {
       // Non-fatal: MySQL changes are already committed.
-      console.warn('[dolt] commit failed (possibly nothing to commit):', commitErr);
+      console.warn('[dolt] commit failed:', commitErr);
     }
     return result;
   } finally {
