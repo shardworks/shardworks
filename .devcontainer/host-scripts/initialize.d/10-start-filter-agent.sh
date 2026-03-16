@@ -19,7 +19,7 @@ SOCKET_PATH="$SOCKET_DIR/agent.sock"
 LOG_FILE="$SOCKET_DIR/agent.log"
 PID_FILE="$SOCKET_DIR/agent.pid"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_SCRIPT="$SCRIPT_DIR/../../scripts/filter-agent.py"
+AGENT_SCRIPT="$SCRIPT_DIR/../filter-agent.py"
 
 mkdir -p "$SOCKET_DIR"
 

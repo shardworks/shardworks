@@ -33,7 +33,7 @@ All host-side mount targets are pre-created by `initialize.d/00-create-bind-moun
 
 ### SSH agent filtering
 
-The container only has access to SSH keys whose comment matches `seatec`. This is enforced by a filter proxy (`scripts/filter-agent.py`) that runs on the host and exposes a filtered socket at `/tmp/ssh-filter/agent.sock`. The container's `SSH_AUTH_SOCK` points to this socket.
+The container only has access to SSH keys whose comment matches `seatec`. This is enforced by a filter proxy (`host-scripts/filter-agent.py`) that runs on the host and exposes a filtered socket at `/tmp/ssh-filter/agent.sock`. The container's `SSH_AUTH_SOCK` points to this socket.
 
 This prevents unrelated SSH keys (e.g. personal keys) from being exposed inside the container.
 
