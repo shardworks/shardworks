@@ -16,6 +16,20 @@ import { readNewSignals, signalFilePath, type SpawnRequestSignal } from './signa
 import { processSignals, fireAlert } from './alerts.js';
 
 // ---------------------------------------------------------------------------
+// Refiner capacity policy
+// ---------------------------------------------------------------------------
+
+/** Maximum fraction of maxWorkers that can be refiners simultaneously. */
+const REFINER_MAX_FRACTION = 0.4;
+
+/**
+ * Minimum fraction of maxWorkers reserved for refiners when draft tasks exist.
+ * Refiners are force-spawned below this floor even if eligible tasks have
+ * higher priority.
+ */
+const REFINER_RESERVE_FRACTION = 0.1;
+
+// ---------------------------------------------------------------------------
 // Daemon entry point
 // ---------------------------------------------------------------------------
 
@@ -237,8 +251,24 @@ async function tick(
       setPhase('spawning');
       let spawnedThisTick = 0;
 
+      // Refiner capacity policy: cap at 40% of maxWorkers, reserve floor at 10%.
+      // Math.max(1, ...) ensures at least one refiner slot on any maxWorkers value.
+      const refinerCap   = Math.max(1, Math.floor(cfg.maxWorkers * REFINER_MAX_FRACTION));
+      const refinerFloor = Math.max(1, Math.ceil(cfg.maxWorkers * REFINER_RESERVE_FRACTION));
+      // Count refiners already running (tracked in state from previous ticks).
+      const refinersAlreadyRunning = state.activeWorkers.filter(
+        (w) => w.role === 'refiner' && isStillRunning(w.pid),
+      ).length;
+      let refinersThisTick = 0;
+
       for (let i = 0; i < slots; i++) {
-        const action = decideNextAction(counts, spawnedThisTick, knownRoles);
+        const action = decideNextAction(
+          counts,
+          refinersAlreadyRunning + refinersThisTick,
+          refinerCap,
+          refinerFloor,
+          knownRoles,
+        );
 
         if (!action) {
           state.lastNoWorkAt = new Date().toISOString();
@@ -258,6 +288,7 @@ async function tick(
             // Optimistically update counts so next slot decision is accurate.
             counts.inProgress++;
             if (action === 'refiner') {
+              refinersThisTick++;
               counts.draft = Math.max(0, counts.draft - 1);
             } else {
               counts.eligible = Math.max(0, counts.eligible - 1);
@@ -337,9 +368,15 @@ async function loadKnownRoles(workDir: string): Promise<Set<string>> {
 }
 
 /**
- * Decide what role of worker to spawn next, given current task counts.
+ * Decide what role of worker to spawn next, given current task counts and
+ * refiner capacity constraints.
  *
- * Priority order:
+ * Refiner capacity policy (evaluated first, before priority comparison):
+ *   - If refinerCount >= refinerCap  → refiners are at capacity; never spawn one.
+ *   - If drafts > 0 && refinerCount < refinerFloor  → reserved floor not met;
+ *     force a refiner regardless of eligible task priority.
+ *
+ * Normal priority order (when floor is satisfied and cap is not reached):
  *   1. Priority-aware draft vs eligible comparison — when both draft and
  *      eligible tasks exist, compare their highest priorities so that a
  *      high-priority draft is refined before a lower-priority eligible task
@@ -349,19 +386,26 @@ async function loadKnownRoles(workDir: string): Promise<Set<string>> {
  *      gets a matching worker spawned.  assigned_role=null tasks spawn an
  *      implementer (backward compat).  Roles not in roles.json (e.g. 'human')
  *      are skipped.
- *   3. Refiner — if there are draft tasks.  Limited to one per tick to avoid
- *      races where two refiners claim the same draft.
+ *   3. Refiner — if there are draft tasks and refinerCount < refinerCap.
+ *      Multiple refiners per tick are allowed up to the cap.
  *   4. null — nothing to do, notify humans.
  *
  * "Implementable" unassigned eligible tasks exclude parent containers whose
  * children are all in draft state (not yet refined).
+ *
+ * @param refinerCount  Total active refiners: already-running + spawned this tick.
+ * @param refinerCap    Maximum refiners allowed simultaneously (40% of maxWorkers).
+ * @param refinerFloor  Minimum refiner slots reserved when drafts exist (10% of maxWorkers).
  */
 function decideNextAction(
   counts: TaskCounts,
-  spawnedThisTick: number,
+  refinerCount: number,
+  refinerCap: number,
+  refinerFloor: number,
   knownRoles: Set<string>,
 ): string | null {
-  const canRefine = counts.draft > 0 && spawnedThisTick === 0;
+  // Cap enforcement: never spawn a refiner if already at or above cap.
+  const canRefine = counts.draft > 0 && refinerCount < refinerCap;
 
   // Build the list of (spawnRole, count) pairs for roles that have eligible tasks
   // and a corresponding worker role definition.
@@ -383,6 +427,12 @@ function decideNextAction(
   }
 
   const hasEligibleWork = spawnableRoles.length > 0;
+
+  // Floor reservation: when drafts exist and we're below the reserved floor,
+  // force a refiner regardless of eligible task priority to prevent starvation.
+  if (canRefine && refinerCount < refinerFloor) {
+    return 'refiner';
+  }
 
   // Priority-aware: when both draft and eligible work exist, compare top priorities.
   if (canRefine && hasEligibleWork) {
