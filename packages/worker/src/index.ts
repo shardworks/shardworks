@@ -3,6 +3,7 @@ import { program, configFromParsedOpts } from './config.js';
 import { loadRole } from './roles.js';
 import { claimTask, claimTaskById, releaseTask } from './claim.js';
 import { launch } from './launcher.js';
+import { mergeWorktreeToMain } from './merge.js';
 import type { ConductedConfig } from './config.js';
 import type { LaunchResult } from './launcher.js';
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -45,6 +46,7 @@ interface ExitStatus {
   agent_id: string;
   session_id: string | null;
   cost_usd: number;
+  commit_sha?: string;
   retry_after?: string | null;
   error?: string;
 }
@@ -68,7 +70,7 @@ async function main(): Promise<void> {
 
   if (config.mode === 'conducted') {
     // Conducted mode: claim the specific task by ID with our ephemeral agent ID
-    await claimTaskById(config.agentId, config.workDir, config.taskId);
+    await claimTaskById(config.agentId, config.workDir, config.taskId, role.claimDraft);
     conducted = config;
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
@@ -126,12 +128,38 @@ async function main(): Promise<void> {
 
   // Normal exit: determine status from result info and exit code
   if (launchResult.exitCode === 0) {
+    const isAgentError = launchResult.result?.isError ?? false;
+
+    // On successful completion (not an agent-reported error), merge the
+    // worktree branch back into main and push.  Refiners and planners that
+    // made no code changes will get a fast no-op (no-branch or no-commits).
+    let commitSha: string | undefined;
+    if (!isAgentError) {
+      const merge = await mergeWorktreeToMain(conducted.taskId, conducted.workDir);
+      if (merge.ok) {
+        commitSha = merge.commitSha;
+        if (merge.reason === 'merged') {
+          process.stderr.write(`worker: merged worktree to main (${commitSha})\n`);
+        }
+      } else {
+        process.stderr.write(`worker: merge failed [${merge.reason}]: ${merge.msg}\n`);
+        appendConductorSignal(conducted.workDir, {
+          type: 'merge_failed',
+          task_id: conducted.taskId,
+          agent_id: conducted.agentId,
+          reason: merge.reason,
+          msg: merge.msg,
+        });
+      }
+    }
+
     writeExitStatus({
-      status: launchResult.result?.isError ? 'failed' : 'completed',
+      status: isAgentError ? 'failed' : 'completed',
       task_id: conducted.taskId,
       agent_id: conducted.agentId,
       session_id: launchResult.sessionId,
       cost_usd: launchResult.result?.costUsd ?? 0,
+      ...(commitSha ? { commit_sha: commitSha } : {}),
     });
   } else {
     // Claude crashed without updating task state — release it back to eligible

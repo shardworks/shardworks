@@ -88,7 +88,7 @@ export interface ConductorStats {
   startedAt: string;
 }
 
-export type AlertType = 'rate_limited' | 'task_exhaustion' | 'crashed';
+export type AlertType = 'rate_limited' | 'task_exhaustion' | 'crashed' | 'merge_failed';
 
 export interface ConductorState {
   phase: Phase;

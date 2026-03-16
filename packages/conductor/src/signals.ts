@@ -35,7 +35,16 @@ export interface CrashedSignal {
   cost_usd: number;
 }
 
-export type WorkerSignal = RateLimitSignal | CrashedSignal;
+export interface MergeFailedSignal {
+  type: 'merge_failed';
+  ts: string;
+  task_id: string;
+  agent_id: string;
+  reason: string;
+  msg: string;
+}
+
+export type WorkerSignal = RateLimitSignal | CrashedSignal | MergeFailedSignal;
 
 // ---------------------------------------------------------------------------
 // Reading new signals using a byte-offset cursor

@@ -18,6 +18,11 @@
         "",
         "Run `tq show {{taskId}}` and `tq dep-results {{taskId}}`, then do the work.",
         "",
+        "You are working in a git worktree. Commit your changes freely as you go — git",
+        "commit and push to origin are handled automatically by the worker after you call",
+        "tq complete. Do NOT run `git merge`, `git push`, or any git operations targeting",
+        "the main branch yourself.",
+        "",
         "When done: /tq-complete with a detailed JSON result. If blocked: /tq-fail with reason."
       ]
     },

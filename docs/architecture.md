@@ -33,6 +33,7 @@ graph TB
         DB["Dolt DB — task state, results"]
         Git["Git worktrees — .claude/worktrees/&lt;task-id&gt;/"]
         Logs["JSONL work logs — data/work-logs/&lt;task-id&gt;.jsonl"]
+        Main["origin/main — merged, canonical code"]
     end
 
     CD -->|"tq enqueue / tq ready"| TQ
@@ -43,6 +44,7 @@ graph TB
     Workers -->|"claude -p --worktree task-id"| Git
     Workers -->|"stream-json"| Logs
     Workers -->|"tq complete/fail"| TQ
+    Workers -->|"merge worktree → main + push"| Main
 ```
 
 ## Design Principles
@@ -124,7 +126,11 @@ A worker is a **single-invocation process** that:
 5. Emits a metadata line to stdout so the conductor can detach
 6. Waits for Claude to finish
 7. If rate-limited: releases the task and exits 75
-8. Otherwise: exits with Claude's exit code
+8. **On successful completion: merges `worktree-<task-id>` → `main`, pushes, cleans up**
+9. Exits with Claude's exit code
+
+The merge step is the worker's responsibility — Claude commits freely within
+its worktree but must not push to `main` directly.
 
 Workers are **stateless between invocations** — all durable state lives in
 external systems (Dolt, git worktrees, JSONL logs).
@@ -203,6 +209,7 @@ sequenceDiagram
     participant W as Worker Process
     participant CC as Claude Code
     participant TQ as Task Queue
+    participant WT as Git Worktree
     participant L as JSONL Log
 
     C->>W: spawn worker --role R [--task-id T]
@@ -223,6 +230,7 @@ sequenceDiagram
     Note over C,W: Conductor detaches after reading metadata
 
     loop Claude working
+        CC->>WT: edit files, git commit in worktree-T branch
         CC-->>W: stream-json events
         W->>L: append to data/work-logs/T.jsonl
         CC->>TQ: tq complete/fail (via tool use)
@@ -230,15 +238,22 @@ sequenceDiagram
 
     CC-->>W: {type: "result", ...}
 
-    alt Normal completion
-        W-->>C: exit status JSON on stderr
+    alt Normal completion (non-error)
+        W->>WT: git merge worktree-T --no-ff into main
+        W->>WT: git push origin main
+        W->>WT: git worktree remove + branch delete
+        W-->>C: exit status JSON on stderr (with commit_sha)
         Note over W: exit 0
+    else Agent reported failure
+        W-->>C: exit status JSON on stderr
+        Note over W: exit 0 (task already marked failed by agent)
     else Rate limit detected
         W->>TQ: tq release T --agent agentId
         W-->>C: exit status JSON on stderr
         Note over W: exit 75 (EX_TEMPFAIL)
     else Hard crash
-        Note over W: exit non-zero, task orphaned
+        W->>TQ: tq release T (best-effort)
+        Note over W: exit non-zero
         Note over C: Reaper or operator releases stale task
     end
 ```
@@ -295,12 +310,27 @@ what's done. Result payloads are the permanent record of completed work.
 ### 2. Git Worktrees (code state)
 
 **What**: Isolated working copies at `.claude/worktrees/<task-id>/`.
-**Lifetime**: Survives worker restarts; persists as long as the worktree exists.
+**Lifetime**: Active while the task is in progress; deleted by the worker on
+successful merge.
 **Accessed by**: Claude Code (working directory for file edits).
 
-Each task gets its own worktree so multiple Claude instances can edit files
-concurrently without conflicts. When a new worker picks up the same task, it
-gets the same worktree with any uncommitted changes still present.
+Each task gets its own git worktree on branch `worktree-<task-id>`, so
+multiple Claude instances can edit files concurrently without conflicts.
+Claude commits freely within the worktree as it works.
+
+**The worker is responsible for merging worktree changes back to `main`.**
+After Claude exits successfully, the worker:
+
+1. Checks if `worktree-<task-id>` has commits ahead of `main`
+2. Runs `git merge worktree-<task-id> --no-ff` from the workspace root
+3. Pushes `origin/main` (with one retry on concurrent-push collision)
+4. Removes the worktree directory and local branch
+
+If the merge fails (conflict), the worker fires a `merge_failed` conductor
+signal and leaves the worktree intact for manual resolution.
+
+**Claude must not** push branches or merge to `main` manually — the worker
+handles this automatically. Claude's role prompt says so explicitly.
 
 ### 3. JSONL Work Logs (observability + context)
 
@@ -315,15 +345,16 @@ same file. This gives a complete timeline of all attempts on the task.
 
 ### Context Preservation Matrix
 
-| Scenario | Task state | Code changes | Prior context | Log |
-|----------|-----------|-------------|---------------|-----|
-| Normal completion | ✅ result_payload | ✅ committed | Not needed | ✅ complete |
-| Rate limit (auto-release) | ✅ released → re-claimed | ✅ worktree intact | ✅ log in prompt | ✅ appended |
-| Crash (new worker) | ⚠️ orphaned until reaped | ✅ worktree intact | ✅ log in prompt | ✅ appended |
-| Machine death | ⚠️ orphaned until reaped | ❌ worktree lost | ❌ log may be lost | ⚠️ partial |
+| Scenario | Task state | Code changes | Merged to main | Prior context | Log |
+|----------|-----------|-------------|----------------|---------------|-----|
+| Normal completion | ✅ result_payload | ✅ committed | ✅ worker merges + pushes | Not needed | ✅ complete |
+| Rate limit (auto-release) | ✅ released → re-claimed | ✅ worktree intact | ⏳ pending retry | ✅ log in prompt | ✅ appended |
+| Crash (new worker) | ⚠️ orphaned until reaped | ✅ worktree intact | ⏳ pending retry | ✅ log in prompt | ✅ appended |
+| Merge conflict | ✅ result_payload | ✅ worktree intact | ❌ needs manual fix | Not needed | ✅ complete |
+| Machine death | ⚠️ orphaned until reaped | ❌ worktree lost | ❌ lost | ❌ log may be lost | ⚠️ partial |
 
-The common case (rate limit) preserves all context. Machine death is the worst
-case but is rare, and the task can still be retried from scratch.
+The common case (normal completion) fully integrates changes. Merge conflicts
+are a rare case requiring operator intervention.
 
 ## Failure Modes and Recovery
 
@@ -417,29 +448,9 @@ Environment variables:
 
 Stdout closes immediately after this line. The conductor reads it and detaches.
 
----
+The exit status on stderr also includes `commit_sha` when a worktree merge
+succeeded:
 
-## Required Changes (from current state)
-
-### Completed
-
-- [x] `assigned_role` field on tasks (schema, types, CLI, claim filtering)
-- [x] Planner claims real tasks (removed `__backlog__` hack)
-- [x] Worker prompts require result summaries
-
-### In Progress
-
-1. **`tq release` command** — `in_progress → eligible`, clears claimed_by/claimed_at
-2. **Task-centric logs** — `data/work-logs/<task-id>.jsonl` (not `<agent-id>/<task-id>.jsonl`)
-3. **Task-centric worktrees** — `--worktree <task-id>` (not `--worktree <agent-id>`)
-4. **Ephemeral agent IDs** — always `randomUUID()`, remove `--agent-id` flag
-5. **Drop `--resume-session`** — context recovery via log-based prompts
-6. **Rate-limit detection** — parse result event, call `tq release`, exit 75
-7. **Structured exit status** — JSON status line to stderr before exit
-8. **Prior-work context in prompts** — mention prior log file when it exists
-9. **Update CLAUDE.md** — reflect simplified worker interface
-
-### Future
-
-- Agentic conductor — automated dispatch with rate-limit tracking
-- Cost tracking — aggregate cost_usd across task attempts
+```json
+{"status":"completed","task_id":"tq-...","agent_id":"...","session_id":"...","cost_usd":0.12,"commit_sha":"abc1234..."}
+```

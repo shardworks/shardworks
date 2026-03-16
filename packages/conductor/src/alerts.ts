@@ -23,6 +23,7 @@ const ALERT_COOLDOWN_MS: Record<AlertType, number> = {
   rate_limited:    5 * 60 * 1000,   //  5 min  — urgent but can repeat
   task_exhaustion: 60 * 60 * 1000,  // 60 min  — back off if queue stays dry
   crashed:         10 * 60 * 1000,  // 10 min
+  merge_failed:    10 * 60 * 1000,  // 10 min
 };
 
 function isCooledDown(state: ConductorState, type: AlertType): boolean {
@@ -176,6 +177,15 @@ export async function processSignals(
           task_id: signal.task_id,
           agent_id: signal.agent_id,
           exit_code: signal.exit_code,
+        },
+      );
+    } else if (signal.type === 'merge_failed') {
+      await fireAlert(cfg, state, log, 'merge_failed',
+        `Worktree merge failed for task ${signal.task_id} [${signal.reason}]: ${signal.msg}`,
+        {
+          task_id: signal.task_id,
+          agent_id: signal.agent_id,
+          reason: signal.reason,
         },
       );
     }
