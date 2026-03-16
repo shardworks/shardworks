@@ -31,7 +31,8 @@
   "initializeCommand": "SSH_KEY_FILTER=seatec .devcontainer/scripts/start-filter-agent.sh",
   "mounts": [
     "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached"
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
   ],
   "name": "[shardworks] devcontainer",
   "overrideCommand": true,
