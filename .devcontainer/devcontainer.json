@@ -1,5 +1,7 @@
 {
   "containerEnv": {
+    "DOLT_HOST": "dolt",
+    "DOLT_PORT": "3306",
     "PW_CHROMIUM_SANDBOX": "0",
     "VSCODE_AGENT_FOLDER": "/vscode"
   },

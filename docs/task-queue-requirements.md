@@ -54,7 +54,7 @@ Task IDs are short hashes (e.g. `tq-a1b2`) derived from a hash of the descriptio
 - Short enough to reference in agent output and natural language
 - No central counter — any agent can generate one independently without coordination
 - Collision-resistant at the scale of thousands to tens of thousands of tasks
-- Subtasks extend the parent ID with dot-separated position suffixes (e.g. `tq-a1b2.3`, `tq-a1b2.3.1`), making subtree membership visible in the ID itself
+- Subtasks extend the parent ID with a dot-separated child hash (e.g. `tq-a1b2.c3d4`, `tq-a1b2.c3d4.e5f6`), making subtree membership visible in the ID itself while remaining safe for concurrent child creation by multiple agents
 
 ### Task status lifecycle
 

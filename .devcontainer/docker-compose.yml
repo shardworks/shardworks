@@ -8,9 +8,37 @@ services:
         limits:
           cpus: "6"
           memory: 6g
+    depends_on:
+      dolt:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     hostname: devcontainer
     ipc: host
-    network_mode: host
+    networks:
+      - shardworks
     shm_size: 1g
     volumes:
       - ..:/workspace:cached
+
+  dolt:
+    image: dolthub/dolt-sql-server:latest
+    environment:
+      DOLT_ROOT_HOST: '%'
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - shardworks
+    volumes:
+      - dolt-data:/var/lib/dolt
+
+networks:
+  shardworks:
+    driver: bridge
+
+volumes:
+  dolt-data:
