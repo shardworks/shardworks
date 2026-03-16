@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc --build",
     "dev": "tsx src/cli.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "vitest run"
   },
   "dependencies": {
     "@shardworks/shared-types": "*",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@types/blessed": "^0.1.25",
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "*"
   }
 }
