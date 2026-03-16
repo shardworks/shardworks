@@ -25,6 +25,7 @@ interface TaskRow extends RowDataPacket {
   claimed_by: string | null;
   claimed_at: Date | null;
   created_at: Date;
+  assigned_role: string | null;
 }
 
 interface StatusCounts {
@@ -226,7 +227,7 @@ export async function dashboard(): Promise<void> {
   async function fetchTaskTree(): Promise<string[]> {
     try {
       const [rows] = await pool.execute<TaskRow[]>(
-        `SELECT id, description, status, parent_id, priority FROM tasks
+        `SELECT id, description, status, parent_id, priority, assigned_role FROM tasks
          ORDER BY priority DESC, created_at ASC`,
       );
 
@@ -242,7 +243,7 @@ export async function dashboard(): Promise<void> {
       const lines: string[] = [];
       function renderNode(node: TaskRow, indent: number): void {
         const prefix = indent === 0 ? '' : '  '.repeat(indent - 1) + '├─ ';
-        const statusIcon = statusSymbol(node.status);
+        const statusIcon = statusSymbol(node.status, node.assigned_role);
         const desc = node.description.length > 50
           ? node.description.slice(0, 47) + '...'
           : node.description;
@@ -265,13 +266,24 @@ export async function dashboard(): Promise<void> {
     }
   }
 
-  function statusSymbol(status: string): string {
+  function statusSymbol(status: string, assignedRole?: string | null): string {
+    // Human-attention-needed tasks (assigned_role = 'human') are always red
+    if (assignedRole === 'human') {
+      const icon = status === 'completed' ? '✓'
+        : status === 'in_progress' ? '▶'
+        : status === 'eligible' ? '○'
+        : status === 'pending' ? '…'
+        : status === 'failed' ? '✗'
+        : status === 'draft' ? '□'
+        : '?';
+      return `{red-fg}${icon}{/red-fg}`;
+    }
     switch (status) {
       case 'completed':   return '{green-fg}✓{/green-fg}';
-      case 'in_progress': return '{yellow-fg}▶{/yellow-fg}';
+      case 'in_progress': return '{green-fg}▶{/green-fg}';
       case 'eligible':    return '{cyan-fg}○{/cyan-fg}';
       case 'pending':     return '{grey-fg}…{/grey-fg}';
-      case 'failed':      return '{red-fg}✗{/red-fg}';
+      case 'failed':      return '{#FF8C00-fg}✗{/#FF8C00-fg}';
       case 'draft':       return '{grey-fg}□{/grey-fg}';
       default:            return '{white-fg}?{/white-fg}';
     }
@@ -286,9 +298,9 @@ export async function dashboard(): Promise<void> {
       `  ─────────── ─────`,
       `  {grey-fg}pending{/grey-fg}     ${String(counts.pending).padStart(5)}`,
       `  {cyan-fg}eligible{/cyan-fg}    ${String(counts.eligible).padStart(5)}`,
-      `  {yellow-fg}in_progress{/yellow-fg} ${String(counts.in_progress).padStart(5)}`,
+      `  {green-fg}in_progress{/green-fg} ${String(counts.in_progress).padStart(5)}`,
       `  {green-fg}completed{/green-fg}   ${String(counts.completed).padStart(5)}`,
-      `  {red-fg}failed{/red-fg}      ${String(counts.failed).padStart(5)}`,
+      `  {#FF8C00-fg}failed{/#FF8C00-fg}      ${String(counts.failed).padStart(5)}`,
       counts.draft > 0 ? `  {grey-fg}draft{/grey-fg}       ${String(counts.draft).padStart(5)}` : null,
       `  ─────────── ─────`,
       `  {bold}total{/bold}       ${String(counts.total).padStart(5)}`,
