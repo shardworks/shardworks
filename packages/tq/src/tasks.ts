@@ -244,6 +244,7 @@ export interface ListFilters {
   status?: TaskStatus;
   parent_id?: string;
   created_by?: string;
+  assigned_role?: string | null;
 }
 
 export async function listTasks(filters: ListFilters = {}): Promise<Task[]> {
@@ -261,6 +262,13 @@ export async function listTasks(filters: ListFilters = {}): Promise<Task[]> {
       }
     }
     if (filters.created_by) { conditions.push('created_by = ?'); params.push(filters.created_by); }
+    if (filters.assigned_role !== undefined) {
+      if (filters.assigned_role === null) {
+        conditions.push('assigned_role IS NULL');
+      } else {
+        conditions.push('assigned_role = ?'); params.push(filters.assigned_role);
+      }
+    }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const [rows] = await conn.execute<TaskRow[]>(
@@ -271,6 +279,97 @@ export async function listTasks(filters: ListFilters = {}): Promise<Task[]> {
     const ids = rows.map(r => r.id);
     const depsMap = await attachDeps(conn, ids);
     return rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+  } finally {
+    conn.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// T05b — Human-flagged task view
+// ---------------------------------------------------------------------------
+
+/** Structured context extracted from a sentinel task description. */
+export interface HumanTaskEntry {
+  task: Task;
+  /** Alert type parsed from the description (e.g. "rate_limited", "crashed"). */
+  alert_type: string | null;
+  /** Task ID referenced in the description (the task that triggered the alert). */
+  referenced_task_id: string | null;
+  /** Full referenced task object, if found. */
+  referenced_task: Task | null;
+  /** Path to the work log for the referenced task. */
+  work_log_path: string | null;
+}
+
+/**
+ * Parse alert_type and referenced_task_id out of a sentinel task description.
+ * Sentinel format: "⚠ Human attention needed [<type>]: <msg>"
+ * msg often contains "task <id>" or "task_id=<id>".
+ */
+function parseSentinelDescription(desc: string): {
+  alert_type: string | null;
+  referenced_task_id: string | null;
+} {
+  const typeMatch = desc.match(/\[([a-z_]+)\]/i);
+  const taskIdMatch = desc.match(/\btask\s+(tq-[a-z0-9]+)\b/i)
+    ?? desc.match(/task_id[=:\s]+(tq-[a-z0-9]+)/i);
+  return {
+    alert_type: typeMatch ? typeMatch[1]! : null,
+    referenced_task_id: taskIdMatch ? taskIdMatch[1]! : null,
+  };
+}
+
+/**
+ * List all tasks with assigned_role='human', enriched with alert context,
+ * the referenced task object, and the work log path.
+ *
+ * By default only returns non-terminal tasks (excludes completed/cancelled/failed).
+ * Pass `includeResolved: true` to include all statuses.
+ */
+export async function listHumanTasks(includeResolved = false): Promise<HumanTaskEntry[]> {
+  const conn = await pool.getConnection();
+  try {
+    const statusFilter = includeResolved
+      ? ''
+      : `AND status NOT IN ('completed', 'cancelled', 'failed')`;
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE assigned_role = 'human' ${statusFilter}
+       ORDER BY priority DESC, created_at ASC`,
+      [],
+    );
+
+    const ids = rows.map(r => r.id);
+    const depsMap = await attachDeps(conn, ids);
+    const tasks = rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
+
+    // Collect all unique referenced task IDs to batch-fetch them
+    const parsed = tasks.map(t => parseSentinelDescription(t.description));
+    const refIds = [...new Set(parsed.map(p => p.referenced_task_id).filter((id): id is string => id !== null))];
+
+    const refTaskMap = new Map<string, Task>();
+    if (refIds.length > 0) {
+      const placeholders = refIds.map(() => '?').join(',');
+      const [refRows] = await conn.execute<TaskRow[]>(
+        `SELECT * FROM tasks WHERE id IN (${placeholders})`,
+        refIds,
+      );
+      const refDepsMap = await attachDeps(conn, refIds);
+      for (const row of refRows) {
+        refTaskMap.set(row.id, rowToTask(row, refDepsMap.get(row.id) ?? []));
+      }
+    }
+
+    return tasks.map((task, i) => {
+      const { alert_type, referenced_task_id } = parsed[i]!;
+      const referenced_task = referenced_task_id ? (refTaskMap.get(referenced_task_id) ?? null) : null;
+      return {
+        task,
+        alert_type,
+        referenced_task_id,
+        referenced_task,
+        work_log_path: referenced_task_id ? `data/work-logs/${referenced_task_id}.jsonl` : null,
+      };
+    });
   } finally {
     conn.release();
   }

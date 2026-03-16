@@ -9,6 +9,7 @@ import {
   batchEnqueue,
   getTask,
   listTasks,
+  listHumanTasks,
   claim,
   claimById,
   complete,
@@ -310,18 +311,35 @@ program
   .option('--status <status>', 'Filter by status (draft|pending|eligible|in_progress|completed|failed)')
   .option('--parent <id>', 'Filter by parent ID (pass empty string for root tasks)')
   .option('--created-by <id>', 'Filter by creator')
-  .action(async (opts: { status?: string; parent?: string; createdBy?: string }) => {
+  .option('--assigned-role <role>', 'Filter by assigned role (use "none" for unassigned tasks)')
+  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string }) => {
     await run(async () => {
       const filters: ListFilters = {};
       if (opts.status)  filters.status     = opts.status as TaskStatus;
       if (opts.parent !== undefined) filters.parent_id = opts.parent;
       if (opts.createdBy)  filters.created_by = opts.createdBy;
+      if (opts.assignedRole !== undefined) {
+        filters.assigned_role = opts.assignedRole === 'none' ? null : opts.assignedRole;
+      }
       return listTasks(filters);
     });
   });
 
-// ── tq show ─────────────────────────────────────────────────────────────────
+// ── tq humans ───────────────────────────────────────────────────────────────
 
+program
+  .command('humans')
+  .description(
+    'List tasks flagged for human attention (assigned_role=human), with enriched context.\n' +
+    'Each entry includes the alert type, the referenced task that triggered the alert,\n' +
+    'and the work log path for that task.',
+  )
+  .option('--all', 'Include resolved tasks (completed, cancelled, failed)')
+  .action(async (opts: { all?: boolean }) => {
+    await run(() => listHumanTasks(opts.all ?? false));
+  });
+
+// ── tq show ─────────────────────────────────────────────────────────────────
 program
   .command('show <id>')
   .description('Show a single task')
