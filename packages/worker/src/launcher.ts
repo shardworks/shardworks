@@ -130,6 +130,70 @@ function workLogsDir(workDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Heartbeat helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch timeout_seconds for a task via `tq show`.
+ * Returns null if the task has no timeout or if the command fails.
+ */
+async function fetchTimeoutSeconds(taskId: string, workDir: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawn('tq', ['show', taskId], {
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer) => { out += chunk; });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0) { resolve(null); return; }
+      try {
+        const task = JSON.parse(out.trim()) as { timeout_seconds?: number | null };
+        resolve(task.timeout_seconds ?? null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * Start a heartbeat loop that calls `tq heartbeat <taskId> --agent <agentId>`
+ * every intervalMs. Returns a cleanup function that clears the interval.
+ * Heartbeat errors are logged as warnings and never crash the launcher.
+ */
+function startHeartbeatLoop(
+  taskId: string,
+  agentId: string,
+  workDir: string,
+  intervalMs: number,
+): () => void {
+  const handle = setInterval(() => {
+    const hb = spawn('tq', ['heartbeat', taskId, '--agent', agentId], {
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    hb.stdout.on('data', (chunk: Buffer) => { out += chunk; });
+    hb.stderr.on('data', (chunk: Buffer) => { err += chunk; });
+    hb.on('error', (e) => {
+      process.stderr.write(`[heartbeat] warning: failed to spawn tq heartbeat: ${e.message}\n`);
+    });
+    hb.on('close', (code) => {
+      if (code !== 0) {
+        process.stderr.write(
+          `[heartbeat] warning: tq heartbeat exited ${code}: ${(err || out).trim()}\n`,
+        );
+      }
+    });
+  }, intervalMs);
+
+  return () => clearInterval(handle);
+}
+
+// ---------------------------------------------------------------------------
 // Argument construction
 // ---------------------------------------------------------------------------
 
@@ -279,6 +343,16 @@ export function launch(config: ConductedConfig): LaunchHandle {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // Start heartbeat loop if the task has a timeout configured.
+    // Use half the timeout as the heartbeat interval so we comfortably beat
+    // the deadline. Errors are warnings — they never crash the launcher.
+    const timeoutSec = await fetchTimeoutSeconds(config.taskId, config.workDir);
+    let stopHeartbeat: (() => void) | null = null;
+    if (timeoutSec !== null && timeoutSec > 0) {
+      const intervalMs = Math.floor(timeoutSec * 500); // half of timeout in ms
+      stopHeartbeat = startHeartbeatLoop(config.taskId, config.agentId, config.workDir, intervalMs);
+    }
+
     let sessionId: string | null = null;
     let metadataEmitted = false;
     let resultInfo: ResultInfo | null = null;
@@ -339,6 +413,7 @@ export function launch(config: ConductedConfig): LaunchHandle {
 
     return new Promise<LaunchResult>((resolve, reject) => {
       child.on('error', (err) => {
+        stopHeartbeat?.();
         logStream.end();
         // If metadata wasn't emitted yet, reject that promise too
         if (!metadataEmitted) {
@@ -349,6 +424,7 @@ export function launch(config: ConductedConfig): LaunchHandle {
       });
 
       child.on('close', (code) => {
+        stopHeartbeat?.();
         logStream.end();
         // If session_id never appeared (e.g. Claude crashed immediately),
         // still resolve metadata with empty session_id so the caller doesn't hang
