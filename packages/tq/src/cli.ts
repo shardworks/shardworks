@@ -23,6 +23,7 @@ import {
   cancel,
   retryTask,
   heartbeat,
+  releaseTimedOut,
   subtree,
   ready,
   reap,
@@ -415,6 +416,19 @@ program
       const ms = parseDuration(opts.staleAfter);
       return reap(ms, opts.release ?? false);
     });
+  });
+
+// ── tq release-timed-out ────────────────────────────────────────────────────
+
+program
+  .command('release-timed-out')
+  .description(
+    'Auto-release in_progress tasks whose timeout_seconds has elapsed since claimed_at.\n' +
+    'Tasks with remaining attempts are re-queued as eligible; exhausted tasks are failed.\n' +
+    'Safe to run via cron or as an operator command.',
+  )
+  .action(async () => {
+    await run(() => releaseTimedOut());
   });
 
 // ── tq relate ───────────────────────────────────────────────────────────────
