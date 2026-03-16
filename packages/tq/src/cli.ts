@@ -464,4 +464,55 @@ program
     await run(() => statusCounts(opts.tag));
   });
 
+// ── tq kick ──────────────────────────────────────────────────────────────────
+
+program
+  .command('kick')
+  .description(
+    'Append a spawn_request signal to the conductor signals file.\n' +
+    'The conductor will wake up immediately (if sleeping) and spawn a worker.\n' +
+    'The spawn bypasses the maxWorkers cap — use when you want immediate processing.',
+  )
+  .option('--task-id <id>', 'Hint: which task to process next (optional)')
+  .option('--role <role>', 'Worker role to spawn: refiner | implementer (auto-detected when omitted)')
+  .option('--requested-by <id>', 'Who is requesting the spawn', DEFAULT_CREATED_BY)
+  .option('--work-dir <path>', 'Conductor work dir (default: $WORK_DIR or cwd)')
+  .action(async (opts: {
+    taskId?: string;
+    role?: string;
+    requestedBy: string;
+    workDir?: string;
+  }) => {
+    // This command writes directly to the signals file — no DB needed.
+    const { appendFile, mkdir } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const workDir = opts.workDir ?? process.env['WORK_DIR'] ?? process.cwd();
+    const signalPath = join(workDir, 'data', 'conductor-signals.jsonl');
+    let code = 0;
+    try {
+      await mkdir(dirname(signalPath), { recursive: true });
+      const signal = {
+        type: 'spawn_request',
+        ts: new Date().toISOString(),
+        requested_by: opts.requestedBy,
+        ...(opts.taskId !== undefined && { task_id: opts.taskId }),
+        ...(opts.role !== undefined && { role: opts.role }),
+      };
+      await appendFile(signalPath, JSON.stringify(signal) + '\n', 'utf8');
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        work_dir: workDir,
+        signal,
+      }, null, 2) + '\n');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(JSON.stringify({ error: 'Error', message }, null, 2) + '\n');
+      code = 1;
+    } finally {
+      // No DB pool to close for this command.
+      await pool.end().catch(() => undefined);
+    }
+    process.exit(code);
+  });
+
 program.parse();

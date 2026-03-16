@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, appendFile, mkdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // File path
@@ -44,7 +44,18 @@ export interface MergeFailedSignal {
   msg: string;
 }
 
-export type WorkerSignal = RateLimitSignal | CrashedSignal | MergeFailedSignal;
+export interface SpawnRequestSignal {
+  type: 'spawn_request';
+  ts: string;
+  /** Optional hint — the task the caller wants processed next. */
+  task_id?: string;
+  /** Optional role override: 'refiner' | 'implementer' | 'planner'. Auto-detected when omitted. */
+  role?: string;
+  /** Who requested the spawn (e.g. 'cli', an agent ID, 'vscode'). */
+  requested_by: string;
+}
+
+export type WorkerSignal = RateLimitSignal | CrashedSignal | MergeFailedSignal | SpawnRequestSignal;
 
 // ---------------------------------------------------------------------------
 // Reading new signals using a byte-offset cursor
@@ -96,4 +107,34 @@ export async function readNewSignals(
   }
 
   return { signals, newOffset: fileSize };
+}
+
+// ---------------------------------------------------------------------------
+// Writing a spawn_request signal
+// ---------------------------------------------------------------------------
+
+/**
+ * Append a spawn_request signal to the conductor signals file.
+ * Creates the data directory if it doesn't exist.
+ */
+export async function appendSpawnRequest(
+  workDir: string,
+  opts: {
+    task_id?: string;
+    role?: string;
+    requested_by: string;
+  },
+): Promise<void> {
+  const path = signalFilePath(workDir);
+  await mkdir(dirname(path), { recursive: true });
+
+  const signal: SpawnRequestSignal = {
+    type: 'spawn_request',
+    ts: new Date().toISOString(),
+    requested_by: opts.requested_by,
+    ...(opts.task_id !== undefined && { task_id: opts.task_id }),
+    ...(opts.role !== undefined && { role: opts.role }),
+  };
+
+  await appendFile(path, JSON.stringify(signal) + '\n', 'utf8');
 }
