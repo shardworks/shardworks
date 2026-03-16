@@ -201,7 +201,7 @@ async function tick(
 
   const needsFullPlan =
     tasksSinceLastPlan >= cfg.batchPlanThreshold &&
-    counts.eligiblePlanner === 0; // avoid creating duplicate planner tasks
+    counts.activePlannerTasks === 0; // avoid creating duplicate planner tasks
 
   if (needsFullPlan) {
     setPhase('planning');
@@ -212,6 +212,25 @@ async function tick(
       log('error', 'Full-backlog plan failed', { error: String(err) });
     }
     return;
+  }
+
+  // ------------------------------------------------------------------
+  // 4. Ensure at least one planner task exists
+  //    The planner is the conductor's "always-on" worker for backlog
+  //    grooming.  If no planner task is active (eligible/pending/
+  //    in_progress), create one so the spawn loop below has something
+  //    to hand to a planner worker.
+  // ------------------------------------------------------------------
+  if (counts.activePlannerTasks === 0) {
+    try {
+      const description = 'Routine backlog grooming: review priorities, wire dependencies, cancel obsolete tasks, split large tasks into subtasks';
+      const taskId = await enqueuePlannerTask(cfg.workDir, description, 100);
+      log('info', 'Created routine planner task', { taskId });
+      counts.eligiblePlanner++;
+      counts.activePlannerTasks++;
+    } catch (err) {
+      log('warn', 'Failed to create routine planner task', { error: String(err) });
+    }
   }
 
   // ------------------------------------------------------------------

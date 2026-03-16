@@ -44,6 +44,11 @@ export interface TaskCounts {
   pending: number;
   /** Eligible tasks assigned to the planner role specifically. */
   eligiblePlanner: number;
+  /**
+   * Planner tasks in any active (non-terminal) state: eligible, pending, or
+   * in_progress.  Used to decide whether to create a new planner task.
+   */
+  activePlannerTasks: number;
   /** Completed tasks. */
   completed: number;
   /** Failed tasks. */
@@ -84,6 +89,7 @@ export async function queryCounts(): Promise<TaskCounts> {
     eligible: 0,
     pending: 0,
     eligiblePlanner: 0,
+    activePlannerTasks: 0,
     completed: 0,
     failed: 0,
     maxDraftPriority: 0,
@@ -95,7 +101,10 @@ export async function queryCounts(): Promise<TaskCounts> {
     const n = Number(row['cnt']);
     const maxP = Number(row['max_priority'] ?? 0);
     switch (row['status']) {
-      case 'in_progress': counts.inProgress += n; break;
+      case 'in_progress':
+        counts.inProgress += n;
+        if (row['assigned_role'] === 'planner') counts.activePlannerTasks += n;
+        break;
       case 'draft':
         counts.draft += n;
         if (maxP > counts.maxDraftPriority) counts.maxDraftPriority = maxP;
@@ -104,11 +113,15 @@ export async function queryCounts(): Promise<TaskCounts> {
         counts.eligible += n;
         if (row['assigned_role'] === 'planner') {
           counts.eligiblePlanner += n;
+          counts.activePlannerTasks += n;
         } else {
           if (maxP > counts.maxEligiblePriority) counts.maxEligiblePriority = maxP;
         }
         break;
-      case 'pending':     counts.pending    += n; break;
+      case 'pending':
+        counts.pending += n;
+        if (row['assigned_role'] === 'planner') counts.activePlannerTasks += n;
+        break;
       case 'completed':   counts.completed  += n; break;
       case 'failed':      counts.failed     += n; break;
     }
