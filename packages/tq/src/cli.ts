@@ -359,9 +359,10 @@ program
 program
   .command('show <id>')
   .description('Show a single task')
-  .action(async (id: string) => {
+  .option('--full-result', 'Always include result_payload even when result_summary is present')
+  .action(async (id: string, opts: { fullResult?: boolean }) => {
     await run(async () => {
-      const task = await getTask(id);
+      const task = await getTask(id, opts.fullResult ?? false);
       if (!task) throw new Error(`Task not found: ${id}`);
       return task;
     }, { skipSchema: true });

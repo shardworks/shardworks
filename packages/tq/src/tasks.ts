@@ -239,13 +239,20 @@ export async function getMaxPriority(): Promise<number> {
   }
 }
 
-export async function getTask(id: string): Promise<Task | null> {
+export async function getTask(id: string, fullResult = false): Promise<Task | null> {
   const conn = await pool.getConnection();
   try {
     const [rows] = await conn.execute<TaskRow[]>('SELECT * FROM tasks WHERE id = ?', [id]);
     if (rows.length === 0) return null;
     const depsMap = await attachDeps(conn, [id]);
-    return rowToTask(rows[0]!, depsMap.get(id) ?? []);
+    const task = rowToTask(rows[0]!, depsMap.get(id) ?? []);
+    // When fullResult is false (default), omit result_payload if result_summary is present.
+    // This keeps the default output compact after compaction while --full-result
+    // lets callers retrieve the original output from the live DB.
+    if (!fullResult && task.result_summary !== null) {
+      task.result_payload = null;
+    }
+    return task;
   } finally {
     conn.release();
   }
