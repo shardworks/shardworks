@@ -224,7 +224,13 @@ As pipelines grow, result payloads from completed tasks accumulate. Agents loadi
 
 ## Interfaces
 
-### Agent API (programmatic)
+### Implementation language
+
+The queue server and orchestrator are both **TypeScript**. Task model types (`Task`, `TaskStatus`, `RelationshipType`, `ClaimResult`, etc.) live in a shared package imported by both, ensuring the orchestrator and queue server always agree on the data shape. Agents communicate with the queue over HTTP and may be written in any language.
+
+The queue server uses **Fastify** for HTTP and **`mysql2`** for Dolt connectivity. The TypeScript client SDK wraps the HTTP API and is the primary integration point for the orchestrator and TypeScript agents; agents in other languages call the HTTP endpoints directly.
+
+### Agent API (HTTP)
 
 ```
 # Task operations
