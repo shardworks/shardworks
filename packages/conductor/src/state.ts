@@ -95,6 +95,11 @@ export interface ConductorState {
   lastTickAt: string | null;
   lastFullPlanAt: string | null;
   lastNoWorkAt: string | null;
+  /**
+   * ISO timestamp until which spawning should be suppressed due to a
+   * rate-limit signal from a worker.  null means no active rate-limit hold.
+   */
+  rateLimitedUntil: string | null;
   /** Byte offset into data/conductor-signals.jsonl — tracks consumption progress. */
   signalFileOffset: number;
   /** ISO timestamps of when each alert type was last fired, for cooldown tracking. */
@@ -112,6 +117,7 @@ export function initialState(): ConductorState {
     lastTickAt: null,
     lastFullPlanAt: null,
     lastNoWorkAt: null,
+    rateLimitedUntil: null,
     signalFileOffset: 0,
     lastAlertAt: {},
     activeWorkers: [],

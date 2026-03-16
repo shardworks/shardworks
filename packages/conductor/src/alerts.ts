@@ -161,6 +161,14 @@ export async function processSignals(
 ): Promise<void> {
   for (const signal of signals) {
     if (signal.type === 'rate_limited') {
+      // Extend the spawning hold-off to cover the reported retry_after time.
+      if (signal.retry_after) {
+        const current = state.rateLimitedUntil ? new Date(state.rateLimitedUntil).getTime() : 0;
+        const incoming = new Date(signal.retry_after).getTime();
+        if (incoming > current) {
+          state.rateLimitedUntil = signal.retry_after;
+        }
+      }
       await fireAlert(cfg, state, log, 'rate_limited',
         `Worker hit rate limit on task ${signal.task_id}`,
         {

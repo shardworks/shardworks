@@ -1,6 +1,7 @@
 import type { ConductorConfig } from './config.js';
 import {
   initialState,
+  readState,
   writeState,
   appendLog,
   clearPid,
@@ -23,6 +24,17 @@ import { processSignals, fireAlert } from './alerts.js';
  */
 export async function runDaemon(cfg: ConductorConfig): Promise<void> {
   const state = initialState();
+
+  // Restore persistent fields from the previous run's state file so we
+  // don't replay old signals, re-fire cooldown'd alerts, etc.
+  const prior = await readState(cfg.workDir);
+  if (prior) {
+    state.signalFileOffset = prior.signalFileOffset;
+    state.lastAlertAt      = prior.lastAlertAt;
+    state.lastFullPlanAt   = prior.lastFullPlanAt;
+    state.rateLimitedUntil = prior.rateLimitedUntil ?? null;
+    // activeWorkers and stats intentionally reset — stale PIDs are unreliable.
+  }
 
   function log(
     level: 'info' | 'warn' | 'error' | 'debug',
@@ -205,6 +217,20 @@ async function tick(
   // ------------------------------------------------------------------
   // 4. Fill available worker slots
   // ------------------------------------------------------------------
+
+  // Respect rate-limit hold-off from worker signals.
+  if (state.rateLimitedUntil) {
+    const holdUntil = new Date(state.rateLimitedUntil).getTime();
+    if (Date.now() < holdUntil) {
+      const resumeAt = new Date(state.rateLimitedUntil).toLocaleTimeString();
+      log('info', `Spawning suppressed — rate limited until ${resumeAt}`);
+      setPhase('waiting');
+      return;
+    }
+    // Hold-off has expired — clear it.
+    state.rateLimitedUntil = null;
+  }
+
   setPhase('spawning');
   let spawnedThisTick = 0;
 
