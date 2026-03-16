@@ -22,6 +22,7 @@ import {
   edit,
   cancel,
   retryTask,
+  heartbeat,
   subtree,
   ready,
   reap,
@@ -216,6 +217,16 @@ program
   .option('--force', 'Skip agent ownership check (operator override)')
   .action(async (id: string, opts: { agent: string; force?: boolean }) => {
     await run(() => release(id, opts.agent, opts.force ?? false));
+  });
+
+// ── tq heartbeat ─────────────────────────────────────────────────────────────
+
+program
+  .command('heartbeat <id>')
+  .description('Refresh claimed_at on an in_progress task to signal the agent is still alive')
+  .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
+  .action(async (id: string, opts: { agent: string }) => {
+    await run(() => heartbeat(id, opts.agent));
   });
 
 // ── tq retry ────────────────────────────────────────────────────────────────
