@@ -100,3 +100,30 @@ Use these slash commands for common task-queue workflows:
 - `/tq-complete <task-id> <result>` — mark a task completed with a result
 - `/tq-fail <task-id> <reason>` — mark a task failed with a reason
 - `/tq-subtask <parent-id> "<description>"` — create a child task
+
+## Operator Tool CLI
+
+The `work` command is the human operator tool for monitoring and administering the fleet.
+
+```bash
+# Tail a worker's log in realtime (accepts worker UUID or task ID)
+work watch <id>
+
+# Launch the full-screen terminal dashboard
+work dashboard    # or: work dash
+```
+
+### Dashboard
+
+`work dashboard` shows a full-screen blessed TUI with four panels:
+- **Fleet Status** — task counts by status (poll DB every 3s)
+- **Active Workers** — in_progress tasks with agent ID, description, elapsed time
+- **Worker Log** — realtime tail of the selected worker's JSONL log
+- **Task Pipeline** — tree view of all tasks with status indicators
+
+Keyboard: `Tab` switch panel, `↑↓` navigate, `r` refresh, `q` quit.
+
+### Work logs
+
+Worker invocations are captured to `data/work-logs/<worker-id>/<task-id>.jsonl`
+as stream-json output from Claude. Each line is a JSON event.

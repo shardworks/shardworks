@@ -1,17 +1,23 @@
 import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
+import { join } from 'node:path';
 import type { ConductedConfig } from './config.js';
 
 // ---------------------------------------------------------------------------
-// Claude JSON output shape (--output-format json)
+// Claude stream-json output shape (--output-format stream-json)
 // ---------------------------------------------------------------------------
 
-interface ClaudeJsonOutput {
+/** A single line emitted by `claude -p --output-format stream-json`. */
+interface StreamEvent {
   type: string;
-  subtype: string;
-  is_error: boolean;
-  result: string;
-  session_id: string;
+  subtype?: string;
+  session_id?: string;
+  is_error?: boolean;
+  result?: string;
   total_cost_usd?: number;
+  [key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -20,8 +26,17 @@ interface ClaudeJsonOutput {
 
 export interface LaunchResult {
   exitCode: number;
-  /** Claude session UUID read from JSON output. Null if output could not be parsed. */
+  /** Claude session UUID read from stream-json output. Null if output could not be parsed. */
   sessionId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Log directory
+// ---------------------------------------------------------------------------
+
+/** Resolve the base directory for work logs. */
+function workLogsDir(workDir: string): string {
+  return process.env['WORK_LOGS_DIR'] ?? join(workDir, 'data', 'work-logs');
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +79,7 @@ function renderPrompt(config: ConductedConfig): string {
 function buildArgs(config: ConductedConfig): string[] {
   const args: string[] = [
     '-p',
-    '--output-format', 'json',
+    '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
     '--model', config.claudeModel,
     '--system-prompt', renderSystemPrompt(config),
@@ -94,31 +109,45 @@ function buildArgs(config: ConductedConfig): string[] {
 export async function launch(config: ConductedConfig): Promise<LaunchResult> {
   const args = buildArgs(config);
 
+  // Ensure log directory exists
+  const logDir = join(workLogsDir(config.workDir), config.agentId);
+  await mkdir(logDir, { recursive: true });
+  const logPath = join(logDir, `${config.taskId}.jsonl`);
+  const logStream = createWriteStream(logPath, { flags: 'a' });
+
   const child = spawn('claude', args, {
     cwd: config.workDir,
-    // stdout piped so we can capture the JSON output
+    // stdout piped so we can capture stream-json lines
     // stderr inherited so Claude's progress output reaches the terminal
     stdio: ['ignore', 'pipe', 'inherit'],
   });
 
-  let stdout = '';
-  child.stdout.on('data', (chunk: Buffer) => {
-    stdout += chunk.toString();
+  let sessionId: string | null = null;
+
+  // Process stream-json output line by line in realtime
+  const rl = createInterface({ input: child.stdout });
+  rl.on('line', (line: string) => {
+    // Write every line to the JSONL log immediately
+    logStream.write(line + '\n');
+    try {
+      const event = JSON.parse(line) as StreamEvent;
+      // Capture session_id from any event that carries it (typically result or init)
+      if (event.session_id) {
+        sessionId = event.session_id;
+      }
+    } catch {
+      // Non-JSON line — still logged, just can't parse
+    }
   });
 
   return new Promise((resolve, reject) => {
     child.on('error', (err) => {
+      logStream.end();
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
 
     child.on('close', (code) => {
-      let sessionId: string | null = null;
-      try {
-        const output = JSON.parse(stdout) as ClaudeJsonOutput;
-        sessionId = output.session_id ?? null;
-      } catch {
-        // stdout wasn't valid JSON — process-level failure before any output
-      }
+      logStream.end();
       resolve({ exitCode: code ?? 1, sessionId });
     });
   });
