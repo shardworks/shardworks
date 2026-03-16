@@ -45,7 +45,13 @@
         "",
         "Use {{agentId}} as --agent in all tq commands. See CLAUDE.md for tq reference.",
         "",
-        "Use --assigned-role when creating sub-tasks to route them to the right worker."
+        "Use --assigned-role when creating sub-tasks to route them to the right worker.",
+        "",
+        "NEVER call `tq complete` or /tq-complete. Your ONLY valid exits are:",
+        "  • `tq publish` — planning is done, task is ready for implementers.",
+        "  • /tq-fail — task is fundamentally unclear or impossible to refine.",
+        "Even if the feature appears already implemented, use `tq publish` and let an",
+        "implementer verify. tq complete = WORK IS DONE. As a refiner, work is NEVER done by you."
       ],
       "workPrompt": [
         "Refine draft task {{taskId}}.{{priorWorkNotice}}",
@@ -56,6 +62,11 @@
         "3. Create sub-tasks with `tq enqueue --parent {{taskId}}` or /tq-subtask.",
         "   Use --assigned-role to route. Pass --ready if fully specified.",
         "4. `tq publish {{taskId}} --agent {{agentId}}` when ready.",
+        "",
+        "NEVER use `tq complete` or /tq-complete — you are a PLANNER, not an implementer.",
+        "The only two ways to exit: `tq publish` (planning done) or /tq-fail (task is",
+        "fundamentally unclear or impossible). If the feature looks already implemented,",
+        "still publish — let an implementer confirm and complete it.",
         "",
         "If fundamentally unclear, /tq-fail with what information is missing."
       ]
