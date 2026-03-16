@@ -32,17 +32,25 @@ export async function runDaemon(cfg: ConductorConfig): Promise<void> {
     appendLog(cfg.workDir, level, state.phase, msg, data);
   }
 
+  // Serialise all writes through a single promise chain so that concurrent
+  // fire-and-forget saves from setPhase() never race with awaited saves on
+  // the shared .tmp file (which would produce ENOENT on rename).
+  let saveQueue: Promise<void> = Promise.resolve();
+
   async function saveState(): Promise<void> {
-    try {
-      await writeState(cfg.workDir, state);
-    } catch (err) {
-      log('error', 'Failed to write state file', { error: String(err) });
-    }
+    saveQueue = saveQueue.then(async () => {
+      try {
+        await writeState(cfg.workDir, state);
+      } catch (err) {
+        log('error', 'Failed to write state file', { error: String(err) });
+      }
+    });
+    return saveQueue;
   }
 
   function setPhase(phase: Phase): void {
     state.phase = phase;
-    // Fire-and-forget state flush — errors are logged inside saveState()
+    // Fire-and-forget state flush — serialised through saveQueue
     saveState().catch(() => undefined);
   }
 
