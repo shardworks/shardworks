@@ -1,0 +1,19 @@
+# Normalise line endings to LF on commit; check out as LF everywhere.
+# This repo runs on Linux; Windows contributors get LF in their working tree too.
+* text=auto eol=lf
+
+# Binaries — no line-ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.otf binary
+*.zip binary
+*.tar.gz binary
+*.tgz binary
+*.gz binary
