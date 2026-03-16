@@ -66,17 +66,24 @@ async function main(): Promise<void> {
   // Validate and load the role definition early so misconfiguration fails fast.
   const role = loadRole(config.role, config.workDir);
 
+  // Log declared capabilities so operators can verify tag-based filtering.
+  if (config.agentTags.length > 0) {
+    process.stderr.write(`worker: capabilities: [${config.agentTags.join(', ')}]\n`);
+  } else {
+    process.stderr.write('worker: capabilities: (none — will claim any task)\n');
+  }
+
   let conducted: ConductedConfig;
 
   if (config.mode === 'conducted') {
     // Conducted mode: claim the specific task by ID with our ephemeral agent ID.
     // claimTaskById may redirect to a child task if the target has eligible children,
     // so use the returned ID (which may differ from config.taskId).
-    const claimedTaskId = await claimTaskById(config.agentId, config.workDir, config.taskId, role.claimDraft);
+    const claimedTaskId = await claimTaskById(config.agentId, config.workDir, config.taskId, role.claimDraft, config.agentTags);
     conducted = { ...config, taskId: claimedTaskId };
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
-    const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft, role.id);
+    const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft, role.id, config.agentTags);
     if (taskId === null) {
       const pool = role.claimDraft ? 'draft' : 'eligible';
       process.stderr.write(`worker: no ${pool} tasks for role "${role.id}" (agent: ${config.agentId})\n`);

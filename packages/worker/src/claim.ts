@@ -54,10 +54,11 @@ async function hasDraftChildren(workDir: string, taskId: string): Promise<boolea
  *
  * Returns the claimed task ID, or null if no suitable task is available.
  */
-export async function claimTask(agentId: string, workDir: string, claimDraft = false, role?: string): Promise<string | null> {
+export async function claimTask(agentId: string, workDir: string, claimDraft = false, role?: string, capabilities: string[] = []): Promise<string | null> {
   const args = ['claim', '--agent', agentId];
   if (claimDraft) args.push('--draft');
   if (role) args.push('--role', role);
+  for (const tag of capabilities) args.push('--capability', tag);
   const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
   if (exitCode !== 0) {
     throw new Error(`tq claim failed: ${stderr.trim() || stdout.trim()}`);
@@ -88,9 +89,10 @@ export async function claimTask(agentId: string, workDir: string, claimDraft = f
  * Returns the ID of the actually-claimed task, which may be a child of the
  * requested task if the tq-level claim redirected to an eligible descendant.
  */
-export async function claimTaskById(agentId: string, workDir: string, taskId: string, claimDraft = false): Promise<string> {
+export async function claimTaskById(agentId: string, workDir: string, taskId: string, claimDraft = false, capabilities: string[] = []): Promise<string> {
   const args = ['claim-id', taskId, '--agent', agentId];
   if (claimDraft) args.push('--draft');
+  for (const tag of capabilities) args.push('--capability', tag);
   const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
   if (exitCode !== 0) {
     throw new Error(`tq claim-id failed: ${stderr.trim() || stdout.trim()}`);
