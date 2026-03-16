@@ -50,10 +50,10 @@ const DEFAULT_AGENT_ID =
 // ---------------------------------------------------------------------------
 
 /** Run an operation, print JSON result to stdout, errors to stderr. */
-async function run<T>(fn: () => Promise<T>): Promise<void> {
+async function run<T>(fn: () => Promise<T>, opts: { skipSchema?: boolean } = {}): Promise<void> {
   let code = 0;
   try {
-    await initSchema();
+    if (!opts.skipSchema) await initSchema();
     const result = await fn();
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   } catch (err) {
@@ -335,7 +335,7 @@ program
         filters.assigned_role = opts.assignedRole === 'none' ? null : opts.assignedRole;
       }
       return listTasks(filters);
-    });
+    }, { skipSchema: true });
   });
 
 // ── tq humans ───────────────────────────────────────────────────────────────
@@ -349,7 +349,7 @@ program
   )
   .option('--all', 'Include resolved tasks (completed, cancelled, failed)')
   .action(async (opts: { all?: boolean }) => {
-    await run(() => listHumanTasks(opts.all ?? false));
+    await run(() => listHumanTasks(opts.all ?? false), { skipSchema: true });
   });
 
 // ── tq show ─────────────────────────────────────────────────────────────────
@@ -361,7 +361,7 @@ program
       const task = await getTask(id);
       if (!task) throw new Error(`Task not found: ${id}`);
       return task;
-    });
+    }, { skipSchema: true });
   });
 
 // ── tq ready ────────────────────────────────────────────────────────────────
@@ -370,7 +370,7 @@ program
   .command('ready')
   .description('List all currently claimable tasks, highest priority first')
   .action(async () => {
-    await run(() => ready());
+    await run(() => ready(), { skipSchema: true });
   });
 
 // ── tq subtree ──────────────────────────────────────────────────────────────
@@ -379,7 +379,7 @@ program
   .command('subtree <id>')
   .description('Show all descendants of a task with a status rollup')
   .action(async (id: string) => {
-    await run(() => subtree(id));
+    await run(() => subtree(id), { skipSchema: true });
   });
 
 // ── tq dep-results ──────────────────────────────────────────────────────────
@@ -388,7 +388,7 @@ program
   .command('dep-results <id>')
   .description('Show the result_payload of each dependency of a task')
   .action(async (id: string) => {
-    await run(() => getDepResults(id));
+    await run(() => getDepResults(id), { skipSchema: true });
   });
 
 // ── tq reap ─────────────────────────────────────────────────────────────────
@@ -450,7 +450,7 @@ program
   .command('relations <task-id>')
   .description('List all typed relationships for a task (outgoing and incoming)')
   .action(async (taskId: string) => {
-    await run(() => getRelations(taskId));
+    await run(() => getRelations(taskId), { skipSchema: true });
   });
 
 program.parse();
