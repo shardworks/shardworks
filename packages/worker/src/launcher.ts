@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { ConductedConfig } from './config.js';
+import { loadRole, renderSystemPrompt, renderWorkPrompt } from './roles.js';
 
 // ---------------------------------------------------------------------------
 // Claude stream-json output shape (--output-format stream-json)
@@ -40,49 +41,19 @@ function workLogsDir(workDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt rendering
-// ---------------------------------------------------------------------------
-
-function renderSystemPrompt(config: ConductedConfig): string {
-  const tagsLine = config.agentTags.length > 0
-    ? `\nCapability tags: ${config.agentTags.join(', ')}`
-    : '';
-
-  return [
-    `You are an autonomous software engineering agent.`,
-    `Your agent ID: ${config.agentId}${tagsLine}`,
-    ``,
-    `Use ${config.agentId} as the --agent value in all tq commands (complete, fail).`,
-    ``,
-    `Refer to CLAUDE.md for the full tq CLI reference.`,
-  ].join('\n');
-}
-
-function renderPrompt(config: ConductedConfig): string {
-  return [
-    `Work on task ${config.taskId}.`,
-    ``,
-    `Check the task with \`tq show ${config.taskId}\`. If the task is in_progress and you have`,
-    `prior conversation history for it, continue from where you left off.`,
-    `If this is a fresh start, read the description and payload, fetch dependency`,
-    `results with \`tq dep-results ${config.taskId}\`, then do the work.`,
-    ``,
-    `When done, use /tq-complete. If you cannot complete the task, use /tq-fail`,
-    `with a clear reason.`,
-  ].join('\n');
-}
-
-// ---------------------------------------------------------------------------
 // Argument construction
 // ---------------------------------------------------------------------------
 
 function buildArgs(config: ConductedConfig): string[] {
+  const role = loadRole(config.role, config.workDir);
+  const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags };
+
   const args: string[] = [
     '-p',
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
     '--model', config.claudeModel,
-    '--system-prompt', renderSystemPrompt(config),
+    '--system-prompt', renderSystemPrompt(role, vars),
   ];
 
   if (config.resumeSession) {
@@ -97,7 +68,7 @@ function buildArgs(config: ConductedConfig): string[] {
     args.push('--max-budget-usd', String(config.claudeMaxBudgetUsd));
   }
 
-  args.push(renderPrompt(config));
+  args.push(renderWorkPrompt(role, vars));
 
   return args;
 }

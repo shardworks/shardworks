@@ -7,6 +7,8 @@ import { randomUUID } from 'node:crypto';
 
 interface BaseConfig {
   agentId: string;
+  /** Role ID — resolved against roles.json at runtime. Default: "implementer". */
+  role: string;
   agentTags: string[];
   workDir: string;
   claudeModel: string;
@@ -26,7 +28,7 @@ export interface ConductedConfig extends BaseConfig {
 }
 
 /**
- * No conductor — the worker claims the next eligible task itself before
+ * No conductor — the worker claims the next suitable task itself before
  * spawning Claude. Agent ID is ephemeral (generated on startup).
  * No resume across runs.
  */
@@ -46,6 +48,7 @@ export function parseConfig(): WorkerConfig {
       'task-id':        { type: 'string' },
       'agent-id':       { type: 'string' },
       'resume-session': { type: 'string' },
+      'role':           { type: 'string' },
     },
     strict: true,
   });
@@ -63,17 +66,19 @@ export function parseConfig(): WorkerConfig {
     );
   }
 
+  const role = values['role'] ?? process.env['WORKER_ROLE'] ?? 'implementer';
+
   const rawTags = process.env['AGENT_TAGS'] ?? '';
   const agentTags = rawTags
     ? rawTags.split(',').map((t) => t.trim()).filter(Boolean)
     : [];
 
-  const workDir           = process.env['WORK_DIR']             ?? process.cwd();
-  const claudeModel       = process.env['CLAUDE_MODEL']         ?? 'sonnet';
-  const rawBudget         = process.env['CLAUDE_MAX_BUDGET_USD'];
+  const workDir            = process.env['WORK_DIR']             ?? process.cwd();
+  const claudeModel        = process.env['CLAUDE_MODEL']         ?? 'sonnet';
+  const rawBudget          = process.env['CLAUDE_MAX_BUDGET_USD'];
   const claudeMaxBudgetUsd = rawBudget !== undefined ? parseFloat(rawBudget) : undefined;
 
-  const base: BaseConfig = { agentId: '', agentTags, workDir, claudeModel, claudeMaxBudgetUsd };
+  const base: BaseConfig = { agentId: '', role, agentTags, workDir, claudeModel, claudeMaxBudgetUsd };
 
   if (taskId !== undefined && agentId !== undefined) {
     return {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { parseConfig } from './config.js';
+import { loadRole } from './roles.js';
 import { claimTask } from './claim.js';
 import { launch } from './launcher.js';
 import type { ConductedConfig } from './config.js';
@@ -7,16 +8,20 @@ import type { ConductedConfig } from './config.js';
 async function main(): Promise<void> {
   const config = parseConfig();
 
+  // Validate and load the role definition early so misconfiguration fails fast.
+  const role = loadRole(config.role, config.workDir);
+
   let conducted: ConductedConfig;
 
   if (config.mode === 'conducted') {
     conducted = config;
   } else {
-    // One-shot: atomically claim the next eligible task before spawning Claude
-    const taskId = await claimTask(config.agentId, config.workDir);
+    // One-shot: atomically claim the next suitable task before spawning Claude
+    const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft);
     if (taskId === null) {
-      // Nothing eligible — exit cleanly so a supervisor can sleep and retry
-      process.stderr.write('worker: no eligible tasks\n');
+      // Nothing available for this role — exit cleanly so a supervisor can sleep and retry
+      const pool = role.claimDraft ? 'draft' : 'eligible';
+      process.stderr.write(`worker: no ${pool} tasks (role: ${role.id})\n`);
       process.exit(0);
     }
     conducted = { ...config, mode: 'conducted', taskId };

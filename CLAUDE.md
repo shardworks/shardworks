@@ -101,6 +101,39 @@ Use these slash commands for common task-queue workflows:
 - `/tq-fail <task-id> <reason>` — mark a task failed with a reason
 - `/tq-subtask <parent-id> "<description>"` — create a child task
 
+## Worker Roles
+
+Worker roles are defined in `roles.json` at the workspace root. Adding a new role
+requires only a JSON edit — no code change.
+
+Each role specifies:
+- `id` — role name, passed as `--role` to the worker
+- `description` — human-readable summary (for conductors selecting a role)
+- `claimDraft` — `true` to claim from the `draft` pool, `false` for `eligible`
+- `systemPrompt` / `workPrompt` — arrays of lines, joined with `\n`
+
+**Template variables** available in prompts:
+- `{{agentId}}` — the agent's ID
+- `{{taskId}}` — the task being worked on
+- `{{tagsLine}}` — `\nCapability tags: foo, bar` or empty string
+
+**Built-in roles:**
+
+| Role | Claims | Action |
+|------|--------|--------|
+| `implementer` | `eligible` tasks | Does the work → `tq complete` / `tq fail` |
+| `refiner` | `draft` tasks | Refines tickets → `tq publish` |
+
+**Launching a worker with a role:**
+
+```bash
+worker --role refiner          # one-shot refiner
+worker --role implementer      # one-shot implementer (default)
+WORKER_ROLE=refiner worker     # via env var
+```
+
+Override the roles file location with `ROLES_CONFIG=/path/to/roles.json`.
+
 ## Operator Tool CLI
 
 The `work` command is the human operator tool for monitoring and administering the fleet.
