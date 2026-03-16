@@ -28,16 +28,17 @@
   "forwardPorts": [],
   "portsAttributes": {},
   "init": true,
-  "initializeCommand": "SSH_KEY_FILTER=seatec .devcontainer/scripts/start-filter-agent.sh",
+  "initializeCommand": ".devcontainer/host-scripts/initialize.sh",
   "mounts": [
     "source=/tmp/ssh-filter,target=/tmp/ssh-filter,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
   ],
-  "name": "[shardworks] devcontainer",
+  "name": "shardworks",
   "overrideCommand": true,
-  "postAttachCommand": "sudo chown -R vscode.vscode /workspace",
-  "postCreateCommand": "/usr/local/bin/postcreate",
+  "postAttachCommand": "/usr/local/bin/post-attach",
+  "postCreateCommand": "/usr/local/bin/post-create",
   "remoteUser": "vscode",
   "service": "devcontainer_shardworks",
   "workspaceFolder": "/workspace"

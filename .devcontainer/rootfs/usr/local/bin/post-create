@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_DIR="/workspace/.devcontainer/logs"
+mkdir -p "$LOG_DIR"
+exec > >(tee "$LOG_DIR/post-create.log") 2>&1
+
+for script in /usr/local/bin/post-create.d/*.sh; do
+    [ -f "$script" ] || continue
+    echo "[post-create] Running $(basename "$script")..." >&2
+    bash "$script"
+done

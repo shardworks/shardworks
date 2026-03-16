@@ -5,24 +5,22 @@
 # Starts (or restarts) filter-agent.py as a background daemon, then waits
 # for the filtered socket to appear before returning.
 #
-# Required env var (set in devcontainer.json initializeCommand or your shell):
+# Optional env var (defaults to "seatec"):
 #   SSH_KEY_FILTER   Substring matched against key comments from ssh-add -l
 #                    e.g. "github", "work", or the full comment string.
 #
 # The filtered socket is always written to SOCKET_PATH below.
 set -euo pipefail
 
+: "${SSH_KEY_FILTER:=seatec}"
+
 SOCKET_DIR="/tmp/ssh-filter"
 SOCKET_PATH="$SOCKET_DIR/agent.sock"
 LOG_FILE="$SOCKET_DIR/agent.log"
 PID_FILE="$SOCKET_DIR/agent.pid"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_SCRIPT="$SCRIPT_DIR/filter-agent.py"
+AGENT_SCRIPT="$SCRIPT_DIR/../../scripts/filter-agent.py"
 
-# Pre-create the directory so the Docker bind-mount source always exists
-# as a directory. If we mount a socket file path and it is absent, Docker
-# creates a *directory* there instead, breaking SSH_AUTH_SOCK inside the
-# container.
 mkdir -p "$SOCKET_DIR"
 
 # ------------------------------------------------------------------
@@ -33,13 +31,6 @@ if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
     echo "[start-filter-agent] Make sure VS Code SSH remote has agent forwarding enabled." >&2
     echo "[start-filter-agent] SSH inside the container will not work." >&2
     exit 0
-fi
-
-if [[ -z "${SSH_KEY_FILTER:-}" ]]; then
-    echo "[start-filter-agent] ERROR: SSH_KEY_FILTER is not set." >&2
-    echo "[start-filter-agent] Set it in your initializeCommand, e.g.:" >&2
-    echo '  "initializeCommand": "SSH_KEY_FILTER='seatec@archon11-01' .devcontainer/start-filter-agent.sh"' >&2
-    exit 1
 fi
 
 if ! command -v python3 &>/dev/null; then
