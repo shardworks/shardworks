@@ -180,6 +180,8 @@ export async function dashboard(): Promise<void> {
   let activeWorkers: ActiveWorker[] = [];
   let selectedWorkerIdx = 0;
   let currentLogWorkerId: string | null = null;
+  let currentLogTaskId: string | null = null;
+  let currentLogPath: string | null = null;
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
   let hideCompletedSubtrees = true;
@@ -360,28 +362,36 @@ export async function dashboard(): Promise<void> {
 
   // ── Log tailing ────────────────────────────────────────────────────────
 
-  async function tailWorkerLog(workerId: string): Promise<void> {
-    if (workerId === currentLogWorkerId) return;
-    currentLogWorkerId = workerId;
+  async function tailWorkerLog(worker: ActiveWorker): Promise<void> {
+    // Skip if same worker+task is already loaded
+    if (worker.agentId === currentLogWorkerId && worker.taskId === currentLogTaskId) return;
+    currentLogWorkerId = worker.agentId;
+    currentLogTaskId = worker.taskId;
+    currentLogPath = null;
     currentLogOffset = 0;
     logBox.setContent('');
-    logBox.setLabel(` Worker Log: ${workerId.slice(0, 8)} `);
+    logBox.setLabel(` Worker Log: ${worker.agentId.slice(0, 8)} │ ${worker.taskId} `);
 
-    // Find the latest log file for this worker
-    const dir = join(workLogsDir(), workerId);
+    // Find the log file for this task in the flat layout (data/work-logs/<task-id>*.jsonl)
+    const base = workLogsDir();
     try {
-      const entries = await readdir(dir);
-      const jsonlFiles = entries.filter(e => e.endsWith('.jsonl'));
-      if (jsonlFiles.length === 0) {
-        logBox.log('{grey-fg}No log files{/grey-fg}');
+      const entries = await readdir(base);
+      // Match files named <task-id>.jsonl or <task-id>.<suffix>.jsonl
+      const taskPrefix = worker.taskId + '.';
+      const exactName = worker.taskId + '.jsonl';
+      const matchingFiles = entries.filter(e =>
+        e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
+      );
+      if (matchingFiles.length === 0) {
+        logBox.log('{grey-fg}No log files for this task{/grey-fg}');
         screen.render();
         return;
       }
       // Find most recently modified
       let latestPath = '';
       let latestMtime = 0;
-      for (const f of jsonlFiles) {
-        const p = join(dir, f);
+      for (const f of matchingFiles) {
+        const p = join(base, f);
         const s = await stat(p);
         if (s.mtimeMs > latestMtime) {
           latestMtime = s.mtimeMs;
@@ -389,6 +399,7 @@ export async function dashboard(): Promise<void> {
         }
       }
       if (latestPath) {
+        currentLogPath = latestPath;
         await loadLogFile(latestPath);
       }
     } catch {
@@ -421,15 +432,22 @@ export async function dashboard(): Promise<void> {
   }
 
   async function refreshLogTail(): Promise<void> {
-    if (!currentLogWorkerId) return;
-    const dir = join(workLogsDir(), currentLogWorkerId);
+    if (!currentLogTaskId) return;
+
+    // If we have a tracked log path, check for new content there first.
+    // Also check for newer log files matching this task (e.g. on retry).
+    const base = workLogsDir();
     try {
-      const entries = await readdir(dir);
-      const jsonlFiles = entries.filter(e => e.endsWith('.jsonl'));
+      const entries = await readdir(base);
+      const taskPrefix = currentLogTaskId + '.';
+      const exactName = currentLogTaskId + '.jsonl';
+      const matchingFiles = entries.filter(e =>
+        e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
+      );
       let latestPath = '';
       let latestMtime = 0;
-      for (const f of jsonlFiles) {
-        const p = join(dir, f);
+      for (const f of matchingFiles) {
+        const p = join(base, f);
         const s = await stat(p);
         if (s.mtimeMs > latestMtime) {
           latestMtime = s.mtimeMs;
@@ -437,6 +455,17 @@ export async function dashboard(): Promise<void> {
         }
       }
       if (!latestPath) return;
+
+      // If a newer log file appeared (e.g. on retry), switch to it
+      if (latestPath !== currentLogPath) {
+        currentLogPath = latestPath;
+        currentLogOffset = 0;
+        logBox.setContent('');
+        await loadLogFile(latestPath);
+        screen.render();
+        return;
+      }
+
       const s = await stat(latestPath);
       if (s.size > currentLogOffset) {
         // Read new data
@@ -499,7 +528,7 @@ export async function dashboard(): Promise<void> {
 
       // Auto-select first worker's log if none selected
       if (!currentLogWorkerId && workers.length > 0) {
-        await tailWorkerLog(workers[0]!.agentId);
+        await tailWorkerLog(workers[0]!);
       }
 
       // Refresh tail of current log
@@ -547,7 +576,7 @@ export async function dashboard(): Promise<void> {
   workersList.on('select item', async (_item: unknown, index: number) => {
     selectedWorkerIdx = index;
     if (activeWorkers[index]) {
-      await tailWorkerLog(activeWorkers[index]!.agentId);
+      await tailWorkerLog(activeWorkers[index]!);
     }
   });
 
@@ -559,7 +588,7 @@ export async function dashboard(): Promise<void> {
       const idx = (workersList as unknown as { selected: number }).selected ?? 0;
       selectedWorkerIdx = idx;
       if (activeWorkers[idx]) {
-        await tailWorkerLog(activeWorkers[idx]!.agentId);
+        await tailWorkerLog(activeWorkers[idx]!);
       }
     }, 10);
   });
