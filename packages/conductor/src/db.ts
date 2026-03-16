@@ -48,6 +48,10 @@ export interface TaskCounts {
   completed: number;
   /** Failed tasks. */
   failed: number;
+  /** Highest priority among draft tasks (0 if none). Used for priority-aware scheduling. */
+  maxDraftPriority: number;
+  /** Highest priority among non-planner eligible tasks (0 if none). Used for priority-aware scheduling. */
+  maxEligiblePriority: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +65,8 @@ export async function queryCounts(): Promise<TaskCounts> {
     `SELECT
        status,
        assigned_role,
-       COUNT(*) AS cnt
+       COUNT(*) AS cnt,
+       MAX(priority) AS max_priority
      FROM tasks
      GROUP BY status, assigned_role`,
   );
@@ -74,16 +79,26 @@ export async function queryCounts(): Promise<TaskCounts> {
     eligiblePlanner: 0,
     completed: 0,
     failed: 0,
+    maxDraftPriority: 0,
+    maxEligiblePriority: 0,
   };
 
   for (const row of rows) {
     const n = Number(row['cnt']);
+    const maxP = Number(row['max_priority'] ?? 0);
     switch (row['status']) {
       case 'in_progress': counts.inProgress += n; break;
-      case 'draft':       counts.draft      += n; break;
+      case 'draft':
+        counts.draft += n;
+        if (maxP > counts.maxDraftPriority) counts.maxDraftPriority = maxP;
+        break;
       case 'eligible':
         counts.eligible += n;
-        if (row['assigned_role'] === 'planner') counts.eligiblePlanner += n;
+        if (row['assigned_role'] === 'planner') {
+          counts.eligiblePlanner += n;
+        } else {
+          if (maxP > counts.maxEligiblePriority) counts.maxEligiblePriority = maxP;
+        }
         break;
       case 'pending':     counts.pending    += n; break;
       case 'completed':   counts.completed  += n; break;

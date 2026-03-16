@@ -33,6 +33,12 @@ The `--agent` value must match `claimed_by`. Use `-r`/`--result` for the result 
 ### Create tasks
 
 ```bash
+# Quick human-facing shorthand — all positional args become the description.
+# Default priority is max(existing) + 1 so this task runs next.
+tq add implement new login flow
+tq add --ready fix typo in README   # skip draft, go straight to eligible
+tq add --priority 50 investigate bug
+
 tq enqueue "<description>" \
   [--payload '<json>'] \
   [--depends-on <id>] \    # repeatable

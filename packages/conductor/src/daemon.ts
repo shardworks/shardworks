@@ -242,13 +242,15 @@ async function tick(
  * Priority order:
  *   1. Planner — if there are planner-assigned eligible tasks (created by
  *      the conductor's full-backlog run or manually).
- *   2. Implementer — if there are regular eligible tasks.
- *   3. Refiner — if there are draft tasks that haven't been published yet.
- *      Limited to one refiner spawn per tick to avoid wasteful claims.
- *   4. null — nothing to do, notify humans.
- *
- * The `spawnedThisTick` argument lets us avoid spawning multiple refiners
- * in the same tick (they would compete for the same draft tasks).
+ *   2. Priority-aware draft vs eligible comparison — when both draft and
+ *      eligible tasks exist, compare their highest priorities so that a
+ *      high-priority draft is refined before a lower-priority eligible task
+ *      is started.  If the top draft priority >= top eligible priority,
+ *      spawn a refiner; otherwise spawn an implementer.
+ *   3. Implementer — if there are regular eligible tasks (and no competing draft).
+ *   4. Refiner — if there are draft tasks (limited to one per tick to avoid
+ *      races where two refiners claim the same draft).
+ *   5. null — nothing to do, notify humans.
  */
 function decideNextAction(
   counts: TaskCounts,
@@ -256,12 +258,16 @@ function decideNextAction(
 ): 'implementer' | 'refiner' | 'planner' | null {
   if (counts.eligiblePlanner > 0) return 'planner';
 
-  // Eligible non-planner tasks
   const eligibleWork = counts.eligible - counts.eligiblePlanner;
-  if (eligibleWork > 0) return 'implementer';
+  const canRefine = counts.draft > 0 && spawnedThisTick === 0;
 
-  // Draft tasks need a refiner — but cap at 1 refiner spawn per tick
-  if (counts.draft > 0 && spawnedThisTick === 0) return 'refiner';
+  // Both draft and eligible tasks exist — pick based on top priority
+  if (canRefine && eligibleWork > 0) {
+    return counts.maxDraftPriority >= counts.maxEligiblePriority ? 'refiner' : 'implementer';
+  }
+
+  if (eligibleWork > 0) return 'implementer';
+  if (canRefine) return 'refiner';
 
   return null;
 }

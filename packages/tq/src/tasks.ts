@@ -192,6 +192,19 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
   });
 }
 
+/** Returns the highest priority value among all tasks, or 0 if no tasks exist. */
+export async function getMaxPriority(): Promise<number> {
+  const conn = await pool.getConnection();
+  try {
+    const [rows] = await conn.execute<RowDataPacket[]>(
+      'SELECT COALESCE(MAX(priority), 0) AS max_priority FROM tasks',
+    );
+    return Number(rows[0]?.['max_priority'] ?? 0);
+  } finally {
+    conn.release();
+  }
+}
+
 export async function getTask(id: string): Promise<Task | null> {
   const conn = await pool.getConnection();
   try {

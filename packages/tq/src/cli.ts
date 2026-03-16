@@ -27,6 +27,7 @@ import {
   getDepResults,
   relate,
   getRelations,
+  getMaxPriority,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -102,6 +103,38 @@ program
         payload: opts.payload ? JSON.parse(opts.payload) : undefined,
         skipDraft: opts.ready ?? false,
         assigned_role: opts.assignedRole,
+      };
+      return enqueue(input);
+    });
+  });
+
+// ── tq add ──────────────────────────────────────────────────────────────────
+
+program
+  .command('add [description...]')
+  .description(
+    'Quickly add a new top-priority task.\n' +
+    'All positional arguments are joined as the task description.\n' +
+    'Default priority is max(existing) + 1 so this task runs next.',
+  )
+  .option('--priority <n>', 'Override priority (default: highest existing + 1)', (v) => parseInt(v, 10))
+  .option('--ready', 'Skip draft; create as eligible/pending immediately')
+  .option('--created-by <id>', 'Creator identifier', DEFAULT_CREATED_BY)
+  .action(async (words: string[], opts: { priority?: number; ready?: boolean; createdBy: string }) => {
+    await run(async () => {
+      const description = words.join(' ').trim();
+      if (!description) throw new Error('Task description is required');
+
+      const priority = opts.priority !== undefined
+        ? opts.priority
+        : (await getMaxPriority()) + 1;
+
+      const input: EnqueueInput = {
+        description,
+        created_by: opts.createdBy,
+        priority,
+        dependencies: [],
+        skipDraft: opts.ready ?? false,
       };
       return enqueue(input);
     });
