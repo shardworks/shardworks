@@ -735,6 +735,43 @@ export async function release(taskId: string, agentId: string, force = false): P
 }
 
 // ---------------------------------------------------------------------------
+// T09b — Heartbeat
+// ---------------------------------------------------------------------------
+
+/**
+ * Refresh claimed_at on an in_progress task to signal the agent is still alive.
+ * Validates that the task is in_progress and claimed by the given agentId.
+ */
+export async function heartbeat(taskId: string, agentId: string): Promise<Task> {
+  return withCommit(`[heartbeat] ${taskId} by ${agentId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = rows[0]!;
+    if (row.status !== 'in_progress') {
+      throw new Error(`Task ${taskId} is not in_progress (status: ${row.status})`);
+    }
+    if (row.claimed_by !== agentId) {
+      throw new Error(`Task ${taskId} is not claimed by ${agentId} (claimed by ${row.claimed_by})`);
+    }
+
+    const now = new Date();
+    await conn.execute(
+      `UPDATE tasks SET claimed_at = ? WHERE id = ?`,
+      [now, taskId],
+    );
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      { ...row, claimed_at: now },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // T10 — Complete
 // ---------------------------------------------------------------------------
 
