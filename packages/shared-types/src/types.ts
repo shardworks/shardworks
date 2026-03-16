@@ -4,7 +4,9 @@ export type TaskStatus =
   | 'eligible'
   | 'in_progress'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'cancelled'
+  | 'blocked';
 
 export interface Task {
   id: string;
@@ -18,6 +20,12 @@ export interface Task {
   claimed_by: string | null;
   /** Optional role that must match the claiming worker's role. Null means any role. */
   assigned_role: string | null;
+  /** Maximum number of attempts before the task is permanently failed. */
+  max_attempts: number;
+  /** Number of times the task has been attempted (failed/crashed). */
+  attempt_count: number;
+  /** Optional per-task timeout in seconds; null means no timeout. */
+  timeout_seconds: number | null;
   created_at: Date;
   eligible_at: Date | null;
   claimed_at: Date | null;
@@ -33,5 +41,7 @@ export interface StatusRollup {
   in_progress: number;
   completed: number;
   failed: number;
+  cancelled: number;
+  blocked: number;
   total: number;
 }

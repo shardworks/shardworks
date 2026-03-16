@@ -27,6 +27,9 @@ interface TaskRow extends RowDataPacket {
   created_by: string;
   claimed_by: string | null;
   assigned_role: string | null;
+  max_attempts: number;
+  attempt_count: number;
+  timeout_seconds: number | null;
   created_at: Date;
   eligible_at: Date | null;
   claimed_at: Date | null;
@@ -66,6 +69,9 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
     created_by: row.created_by,
     claimed_by: row.claimed_by ?? null,
     assigned_role: row.assigned_role ?? null,
+    max_attempts: row.max_attempts ?? 1,
+    attempt_count: row.attempt_count ?? 0,
+    timeout_seconds: row.timeout_seconds ?? null,
     created_at: row.created_at,
     eligible_at: row.eligible_at ?? null,
     claimed_at: row.claimed_at ?? null,
@@ -609,6 +615,40 @@ export async function complete(
 }
 
 // ---------------------------------------------------------------------------
+// T07b — Blocked cascade
+// ---------------------------------------------------------------------------
+
+/**
+ * After a task reaches terminal failed state, recursively mark all pending/eligible
+ * dependents as blocked (they can no longer proceed without a retry of this task).
+ */
+async function cascadeBlocked(conn: PoolConnection, failedTaskId: string): Promise<void> {
+  // Use a worklist to process transitive dependents iteratively
+  const toProcess = [failedTaskId];
+  const seen = new Set<string>();
+
+  while (toProcess.length > 0) {
+    const current = toProcess.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    const [candidates] = await conn.execute<RowDataPacket[]>(
+      `SELECT task_id FROM task_dependencies WHERE dep_id = ?`,
+      [current],
+    );
+
+    for (const { task_id } of candidates) {
+      if (seen.has(task_id)) continue;
+      await conn.execute(
+        `UPDATE tasks SET status = 'blocked' WHERE id = ? AND status IN ('pending', 'eligible')`,
+        [task_id],
+      );
+      toProcess.push(task_id);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // T11 — Fail
 // ---------------------------------------------------------------------------
 
@@ -628,15 +668,39 @@ export async function fail(
     if (row.claimed_by !== agentId) throw new Error(`Task ${taskId} is not claimed by ${agentId}`);
 
     const now = new Date();
+    const newAttemptCount = (row.attempt_count ?? 0) + 1;
+    const maxAttempts = row.max_attempts ?? 1;
+
+    if (newAttemptCount < maxAttempts) {
+      // Attempts remain — backoff and return to eligible
+      const backoffMs = Math.pow(2, newAttemptCount - 1) * 30_000;
+      const eligibleAt = new Date(now.getTime() + backoffMs);
+      const resultPayload = { error: reason, attempt: newAttemptCount, retrying: true };
+      await conn.execute(
+        `UPDATE tasks SET status = 'eligible', attempt_count = ?, eligible_at = ?,
+         result_payload = ?, claimed_by = NULL, claimed_at = NULL, completed_at = NULL WHERE id = ?`,
+        [newAttemptCount, eligibleAt, JSON.stringify(resultPayload), taskId],
+      );
+      const depsMap = await attachDeps(conn, [taskId]);
+      return rowToTask(
+        { ...row, status: 'eligible', attempt_count: newAttemptCount, eligible_at: eligibleAt,
+          result_payload: resultPayload, claimed_by: null, claimed_at: null, completed_at: null },
+        depsMap.get(taskId) ?? [],
+      );
+    }
+
+    // No attempts remain — terminal failure
     const resultPayload = { error: reason };
     await conn.execute(
-      `UPDATE tasks SET status = 'failed', result_payload = ?, completed_at = ? WHERE id = ?`,
-      [JSON.stringify(resultPayload), now, taskId],
+      `UPDATE tasks SET status = 'failed', attempt_count = ?, result_payload = ?, completed_at = ? WHERE id = ?`,
+      [newAttemptCount, JSON.stringify(resultPayload), now, taskId],
     );
+
+    await cascadeBlocked(conn, taskId);
 
     const depsMap = await attachDeps(conn, [taskId]);
     return rowToTask(
-      { ...row, status: 'failed', result_payload: resultPayload, completed_at: now },
+      { ...row, status: 'failed', attempt_count: newAttemptCount, result_payload: resultPayload, completed_at: now },
       depsMap.get(taskId) ?? [],
     );
   });
@@ -926,20 +990,108 @@ export async function cancel(taskId: string, actor: string, reason: string): Pro
     if (row.status === 'in_progress') {
       throw new Error(`Cannot cancel ${taskId}: it is in_progress (claimed by ${row.claimed_by})`);
     }
-    if (row.status === 'completed' || row.status === 'failed') {
+    if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') {
       throw new Error(`Cannot cancel ${taskId}: it is already ${row.status}`);
     }
 
     const now = new Date();
-    const resultPayload = { cancelled: true, reason };
+    const resultPayload = { cancelled: true, cancelled_by: actor, reason };
     await conn.execute(
-      `UPDATE tasks SET status = 'failed', result_payload = ?, completed_at = ? WHERE id = ?`,
+      `UPDATE tasks SET status = 'cancelled', result_payload = ?, completed_at = ? WHERE id = ?`,
       [JSON.stringify(resultPayload), now, taskId],
     );
 
     const depsMap = await attachDeps(conn, [taskId]);
     return rowToTask(
-      { ...row, status: 'failed', result_payload: resultPayload, completed_at: now },
+      { ...row, status: 'cancelled', result_payload: resultPayload, completed_at: now },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Retry — re-queue a failed or blocked task
+// ---------------------------------------------------------------------------
+
+/**
+ * After a retried task is no longer failed, un-block any tasks that were
+ * blocked solely because of it.
+ */
+async function promoteUnblocked(conn: PoolConnection, retriedTaskId: string): Promise<void> {
+  const now = new Date();
+
+  const [candidates] = await conn.execute<RowDataPacket[]>(
+    `SELECT task_id FROM task_dependencies WHERE dep_id = ?`,
+    [retriedTaskId],
+  );
+
+  for (const { task_id } of candidates) {
+    const [depRows] = await conn.execute<RowDataPacket[]>(
+      `SELECT t.status
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.dep_id
+       WHERE td.task_id = ?`,
+      [task_id],
+    );
+    // A blocked task can be unblocked if none of its deps are in a terminal non-completed state
+    const hasTerminalBlocker = depRows.some(
+      r => r.status === 'failed' || r.status === 'cancelled',
+    );
+    const allDone = depRows.every(r => r.status === 'completed');
+    if (!hasTerminalBlocker && !allDone) {
+      // Deps are pending/eligible/in_progress — restore to pending so it waits normally
+      await conn.execute(
+        `UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'blocked'`,
+        [task_id],
+      );
+    } else if (allDone) {
+      await conn.execute(
+        `UPDATE tasks SET status = 'eligible', eligible_at = ? WHERE id = ? AND status = 'blocked'`,
+        [now, task_id],
+      );
+    }
+  }
+}
+
+export async function retryTask(taskId: string, actorId: string): Promise<Task> {
+  return withCommit(`[retry] ${taskId} by ${actorId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = rows[0]!;
+    if (row.status !== 'failed' && row.status !== 'blocked') {
+      throw new Error(`Task ${taskId} cannot be retried (status: ${row.status})`);
+    }
+
+    // Check whether all dependencies are satisfied
+    const [depRows] = await conn.execute<RowDataPacket[]>(
+      `SELECT t.status
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.dep_id
+       WHERE td.task_id = ?`,
+      [taskId],
+    );
+    const allDepsCompleted = depRows.every(r => r.status === 'completed');
+    const newStatus = allDepsCompleted ? 'eligible' : 'pending';
+    const now = new Date();
+
+    await conn.execute(
+      `UPDATE tasks
+       SET status = ?, attempt_count = 0, claimed_by = NULL, claimed_at = NULL,
+           completed_at = NULL, result_payload = NULL,
+           eligible_at = ?
+       WHERE id = ?`,
+      [newStatus, newStatus === 'eligible' ? now : null, taskId],
+    );
+
+    await promoteUnblocked(conn, taskId);
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      { ...row, status: newStatus, attempt_count: 0, claimed_by: null, claimed_at: null,
+        completed_at: null, result_payload: null, eligible_at: newStatus === 'eligible' ? now : null },
       depsMap.get(taskId) ?? [],
     );
   });
@@ -976,7 +1128,7 @@ export async function subtree(parentId: string): Promise<SubtreeResult> {
     const tasks = rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
 
     const rollup: StatusRollup = {
-      draft: 0, pending: 0, eligible: 0, in_progress: 0, completed: 0, failed: 0, total: tasks.length,
+      draft: 0, pending: 0, eligible: 0, in_progress: 0, completed: 0, failed: 0, cancelled: 0, blocked: 0, total: tasks.length,
     };
     for (const t of tasks) rollup[t.status]++;
 

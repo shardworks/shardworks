@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { parseConfig } from './config.js';
+import { program, configFromParsedOpts } from './config.js';
 import { loadRole } from './roles.js';
 import { claimTask, claimTaskById, releaseTask } from './claim.js';
 import { launch } from './launcher.js';
@@ -36,7 +36,8 @@ function writeExitStatus(status: ExitStatus): void {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const config = parseConfig();
+  await program.parseAsync();
+  const config = configFromParsedOpts();
 
   // Validate and load the role definition early so misconfiguration fails fast.
   const role = loadRole(config.role, config.workDir);
@@ -101,6 +102,15 @@ async function main(): Promise<void> {
       cost_usd: launchResult.result?.costUsd ?? 0,
     });
   } else {
+    // Claude crashed without updating task state — release it back to eligible
+    // so another worker can pick it up, rather than leaving it stuck in_progress.
+    try {
+      await releaseTask(conducted.agentId, conducted.workDir, conducted.taskId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`worker: failed to release task after crash: ${msg}\n`);
+    }
+
     writeExitStatus({
       status: 'crashed',
       task_id: conducted.taskId,

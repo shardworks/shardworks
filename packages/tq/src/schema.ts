@@ -27,6 +27,9 @@ const STATEMENTS = [
 /** Migrations that may fail if already applied (e.g. column already exists). */
 const MIGRATIONS = [
   `ALTER TABLE tasks ADD COLUMN assigned_role VARCHAR(64) AFTER claimed_by`,
+  `ALTER TABLE tasks ADD COLUMN max_attempts INT NOT NULL DEFAULT 1 AFTER assigned_role`,
+  `ALTER TABLE tasks ADD COLUMN attempt_count INT NOT NULL DEFAULT 0 AFTER max_attempts`,
+  `ALTER TABLE tasks ADD COLUMN timeout_seconds INT NULL AFTER attempt_count`,
 ];
 
 export async function initSchema(): Promise<void> {

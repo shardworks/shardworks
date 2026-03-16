@@ -20,6 +20,7 @@ import {
   reparent,
   edit,
   cancel,
+  retryTask,
   subtree,
   ready,
   reap,
@@ -179,6 +180,16 @@ program
   .option('--force', 'Skip agent ownership check (operator override)')
   .action(async (id: string, opts: { agent: string; force?: boolean }) => {
     await run(() => release(id, opts.agent, opts.force ?? false));
+  });
+
+// ── tq retry ────────────────────────────────────────────────────────────────
+
+program
+  .command('retry <id>')
+  .description('Re-queue a failed or blocked task, resetting attempt count')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .action(async (id: string, opts: { agent: string }) => {
+    await run(() => retryTask(id, opts.agent));
   });
 
 // ── tq publish ──────────────────────────────────────────────────────────────
