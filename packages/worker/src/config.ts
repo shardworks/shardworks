@@ -13,6 +13,12 @@ interface BaseConfig {
   workDir: string;
   claudeModel: string;
   claudeMaxBudgetUsd?: number;
+  /**
+   * When true, stream human-readable Claude output to stderr.
+   * Default: true if stderr is a TTY, false otherwise.
+   * Overridden by --interactive / --no-interactive.
+   */
+  interactive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +55,8 @@ export function parseConfig(): WorkerConfig {
       'agent-id':       { type: 'string' },
       'resume-session': { type: 'string' },
       'role':           { type: 'string' },
+      'interactive':    { type: 'boolean' },
+      'no-interactive': { type: 'boolean' },
     },
     strict: true,
   });
@@ -68,6 +76,11 @@ export function parseConfig(): WorkerConfig {
 
   const role = values['role'] ?? process.env['WORKER_ROLE'] ?? 'implementer';
 
+  // Interactive defaults to TTY detection; explicit flags override.
+  let interactive = process.stderr.isTTY ?? false;
+  if (values['interactive'] === true)    interactive = true;
+  if (values['no-interactive'] === true) interactive = false;
+
   const rawTags = process.env['AGENT_TAGS'] ?? '';
   const agentTags = rawTags
     ? rawTags.split(',').map((t) => t.trim()).filter(Boolean)
@@ -78,7 +91,9 @@ export function parseConfig(): WorkerConfig {
   const rawBudget          = process.env['CLAUDE_MAX_BUDGET_USD'];
   const claudeMaxBudgetUsd = rawBudget !== undefined ? parseFloat(rawBudget) : undefined;
 
-  const base: BaseConfig = { agentId: '', role, agentTags, workDir, claudeModel, claudeMaxBudgetUsd };
+  const base: BaseConfig = {
+    agentId: '', role, interactive, agentTags, workDir, claudeModel, claudeMaxBudgetUsd,
+  };
 
   if (taskId !== undefined && agentId !== undefined) {
     return {

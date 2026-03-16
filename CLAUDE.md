@@ -158,6 +158,29 @@ WORKER_ROLE=planner worker     # via env var
 
 Override the roles file location with `ROLES_CONFIG=/path/to/roles.json`.
 
+### Worker output protocol
+
+On startup, the worker emits a single JSON metadata line to **stdout**, then
+**closes stdout**. This lets an orchestrator read the line and detach without
+staying connected for the lifetime of the run.
+
+```json
+{"agent_id":"...","task_id":"...","role":"implementer","session_id":"...","log_path":"data/work-logs/.../....jsonl","pid":12345}
+```
+
+The `session_id` is needed for `--resume-session` on subsequent invocations.
+The `log_path` points to the JSONL stream-json capture.
+
+**Interactive mode**: When stderr is a TTY (or `--interactive` is passed),
+the worker streams human-readable Claude output to stderr — thinking, text,
+tool calls, and results — so a human can watch progress. In non-interactive
+mode (e.g. orchestrator-spawned), stderr is silent after initial diagnostics.
+
+```bash
+worker --role refiner --interactive    # force human-readable stderr
+worker --role refiner --no-interactive # force silent mode
+```
+
 ## Operator Tool CLI
 
 The `work` command is the human operator tool for monitoring and administering the fleet.

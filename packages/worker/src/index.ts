@@ -17,13 +17,11 @@ async function main(): Promise<void> {
     conducted = config;
   } else if (role.claimDraft === null) {
     // Planner mode: no task to claim — work on the whole backlog.
-    // Use a synthetic task ID so the launch pipeline has something to reference.
     conducted = { ...config, mode: 'conducted', taskId: '__backlog__' };
   } else {
     // One-shot: atomically claim the next suitable task before spawning Claude
     const taskId = await claimTask(config.agentId, config.workDir, role.claimDraft);
     if (taskId === null) {
-      // Nothing available for this role — exit cleanly so a supervisor can sleep and retry
       const pool = role.claimDraft ? 'draft' : 'eligible';
       process.stderr.write(`worker: no ${pool} tasks (role: ${role.id})\n`);
       process.exit(0);
@@ -31,14 +29,23 @@ async function main(): Promise<void> {
     conducted = { ...config, mode: 'conducted', taskId };
   }
 
-  const { exitCode, sessionId } = await launch(conducted);
+  const handle = launch(conducted);
 
-  // Print session ID to stdout so the caller (conductor/supervisor) can store it
-  // for use as --resume-session on subsequent invocations.
-  if (sessionId) {
-    process.stdout.write(sessionId + '\n');
-  }
+  // Wait for Claude to establish a session, then emit metadata for the orchestrator.
+  const meta = await handle.metadata;
+  process.stdout.write(JSON.stringify(meta) + '\n');
 
+  // Signal to the orchestrator that all metadata has been emitted and it can detach.
+  // Closing stdout causes any pipe reader (the orchestrator) to get EOF.
+  // In interactive mode we keep stderr open for formatted output, but stdout is done.
+  // Use end() + destroy() to fully close the fd so the orchestrator sees EOF even
+  // if it hasn't closed its end of the pipe yet.
+  await new Promise<void>(resolve => process.stdout.end(resolve));
+
+  // Now run until Claude finishes. In interactive mode, formatted output continues
+  // on stderr. In non-interactive mode, the process is silent — only the log file
+  // captures output.
+  const { exitCode } = await handle.done;
   process.exit(exitCode);
 }
 
