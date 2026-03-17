@@ -12,34 +12,13 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { RowDataPacket } from 'mysql2/promise';
-import type { TaskDbRow } from '@shardworks/shared-types';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-// TaskDbRow (from @shardworks/shared-types) is the single source of truth for
-// the tasks table schema.  Extending it here adds the mysql2 RowDataPacket
-// marker so that typed execute<TaskRow[]>() calls work correctly.
-interface TaskRow extends RowDataPacket, TaskDbRow {}
-
-interface StatusCounts {
-  pending: number;
-  eligible: number;
-  in_progress: number;
-  completed: number;
-  failed: number;
-  draft: number;
-  total: number;
-}
-
-interface ActiveWorker {
-  agentId: string;
-  taskId: string;
-  description: string;
-  claimedAt: Date | null;
-  role: string | null;
-}
+import type {
+  TaskRow,
+  StatusCounts,
+  ActiveWorker,
+  TaskMeta,
+  TaskTreeResult,
+} from './dashboard-types.js';
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -308,18 +287,6 @@ export async function dashboard(): Promise<void> {
     } catch {
       return [];
     }
-  }
-
-  interface TaskMeta {
-    taskId: string;
-    status: string;
-    claimedBy: string | null;
-  }
-
-  interface TaskTreeResult {
-    lines: string[];
-    meta: TaskMeta[];
-    hiddenCount: number;
   }
 
   async function fetchTaskTree(): Promise<TaskTreeResult> {
