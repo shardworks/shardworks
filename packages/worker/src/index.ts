@@ -47,6 +47,10 @@ interface ExitStatus {
   session_id: string | null;
   cost_usd: number;
   commit_sha?: string;
+  /** Dolt commit hash recorded by `tq session-start` just before Claude was
+   *  spawned.  Pair with the hash from `tq session-end` and pass both to
+   *  `tq diff <start> <end>` to inspect all DB changes in this session. */
+  start_commit_hash?: string | null;
   retry_after?: string | null;
   error?: string;
 }
@@ -129,6 +133,7 @@ async function main(): Promise<void> {
       agent_id: conducted.agentId,
       session_id: launchResult.sessionId,
       cost_usd: launchResult.result.costUsd,
+      start_commit_hash: launchResult.startCommitHash,
       retry_after: launchResult.result.retryAfter,
     });
 
@@ -169,6 +174,7 @@ async function main(): Promise<void> {
       session_id: launchResult.sessionId,
       cost_usd: launchResult.result?.costUsd ?? 0,
       ...(commitSha ? { commit_sha: commitSha } : {}),
+      start_commit_hash: launchResult.startCommitHash,
     });
   } else {
     // Claude crashed without updating task state — release it back to eligible
@@ -195,6 +201,7 @@ async function main(): Promise<void> {
       agent_id: conducted.agentId,
       session_id: launchResult.sessionId,
       cost_usd: launchResult.result?.costUsd ?? 0,
+      start_commit_hash: launchResult.startCommitHash,
       error: `claude exited with code ${launchResult.exitCode}`,
     });
   }
