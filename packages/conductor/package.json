@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@shardworks/shared-types": "workspace:*",
+    "@shardworks/tq": "*",
     "commander": "^13.1.0",
     "mysql2": "^3.11.0",
     "tsx": "^4.19.0"

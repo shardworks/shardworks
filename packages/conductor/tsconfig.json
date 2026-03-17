@@ -5,7 +5,8 @@
     "rootDir": "src"
   },
   "references": [
-    { "path": "../shared-types" }
+    { "path": "../shared-types" },
+    { "path": "../tq" }
   ],
   "include": ["src/**/*"]
 }
