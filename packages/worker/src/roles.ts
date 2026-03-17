@@ -98,6 +98,11 @@ export interface PromptVars {
   agentTags: string[];
   /** Workspace directory — used to resolve log paths. */
   workDir: string;
+  /**
+   * Dolt branch this worker is operating on.
+   * Inject into prompts via {{branch}} so the agent includes --branch in its tq calls.
+   */
+  branch: string;
 }
 
 function workLogsDir(workDir: string): string {
@@ -120,13 +125,21 @@ function interpolate(lines: string[], vars: PromptVars): string {
       `uncommitted changes from prior attempts.`
     : '';
 
+  // Branch context line: non-empty when operating on a non-main branch so the
+  // agent knows to include --branch in its tq complete / tq fail / tq enqueue calls.
+  const branchLine = vars.branch && vars.branch !== 'main'
+    ? `\nDolt branch: ${vars.branch} — pass --branch ${vars.branch} to all tq commands (complete, fail, enqueue, etc.)`
+    : '';
+
   return lines
     .join('\n')
     .replaceAll('{{agentId}}', vars.agentId)
     .replaceAll('{{taskId}}', vars.taskId)
     .replaceAll('{{tagsLine}}', tagsLine)
     .replaceAll('{{logPath}}', logRelPath)
-    .replaceAll('{{priorWorkNotice}}', priorWorkNotice);
+    .replaceAll('{{priorWorkNotice}}', priorWorkNotice)
+    .replaceAll('{{branch}}', vars.branch)
+    .replaceAll('{{branchLine}}', branchLine);
 }
 
 export function renderSystemPrompt(role: RoleDefinition, vars: PromptVars): string {

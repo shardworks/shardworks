@@ -50,16 +50,30 @@ export interface SpawnedWorker {
  * When `taskId` is provided the worker is started in conducted mode:
  * `--task-id <taskId>` is passed so the worker claims that specific task
  * rather than racing with other workers for the next available one.
+ *
+ * When `branch` is provided (and is not 'main'), the worker receives
+ * `--branch <branch>` and `DOLT_DATABASE` is set to `shardworks/<branch>`
+ * in its environment so all tq library calls and spawned CLI processes
+ * are automatically scoped to that branch.
  */
 export function spawnWorker(
   workDir: string,
   role: string,
   taskId?: string,
+  branch?: string,
 ): SpawnedWorker {
+  const effectiveBranch = branch && branch !== 'main' ? branch : undefined;
+
   const args: string[] = ['--role', role];
   if (taskId) {
     args.push('--task-id', taskId);
   }
+  if (effectiveBranch) {
+    args.push('--branch', effectiveBranch);
+  }
+
+  const doltDatabase = process.env['DOLT_DATABASE'] ?? 'shardworks';
+  const doltDatabaseBase = doltDatabase.split('/')[0] ?? doltDatabase;
 
   const child = spawn('worker', args, {
     cwd: workDir,
@@ -68,6 +82,14 @@ export function spawnWorker(
     env: {
       ...process.env,
       WORK_DIR: workDir,
+      WORKER_BRANCH: effectiveBranch ?? 'main',
+      // Scope all tq DB operations to the branch by setting the Dolt database
+      // connection string.  The worker process (and every tq CLI it spawns as a
+      // child) inherits this, so claim / complete / fail / heartbeat etc. all
+      // operate on the correct branch without requiring per-call --branch flags.
+      DOLT_DATABASE: effectiveBranch
+        ? `${doltDatabaseBase}/${effectiveBranch}`
+        : doltDatabaseBase,
     },
   });
   child.unref();

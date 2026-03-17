@@ -16,6 +16,13 @@ export interface ConductorConfig {
    * Payload is Slack-compatible JSON. Works with Slack, Discord, ntfy.sh, etc.
    */
   alertWebhook: string | null;
+  /**
+   * Dolt branch all spawned workers operate on.
+   * Defaults to 'main'. Workers are spawned with --branch <branch> and
+   * DOLT_DATABASE is set to shardworks/<branch> in their environment so all
+   * tq library calls and spawned CLI processes are branch-scoped automatically.
+   */
+  branch: string;
 }
 
 export function loadConfig(overrides: Partial<ConductorConfig> = {}): ConductorConfig {
@@ -56,5 +63,8 @@ export function loadConfig(overrides: Partial<ConductorConfig> = {}): ConductorC
     alertWebhook: overrides.alertWebhook
       ?? process.env['CONDUCTOR_ALERT_WEBHOOK']
       ?? null,
+    branch: overrides.branch
+      ?? process.env['CONDUCTOR_BRANCH']
+      ?? 'main',
   };
 }

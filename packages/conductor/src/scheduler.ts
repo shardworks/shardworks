@@ -524,8 +524,8 @@ export class DefaultScheduler implements Scheduler {
     _counts: TaskCounts,
     taskId?: string,
   ): Promise<SpawnedWorker | null> {
-    const spawned = spawnWorker(cfg.workDir, action, taskId);
-    log('info', `Spawned ${action} worker`, { pid: spawned.pid, taskId: taskId ?? null });
+    const spawned = spawnWorker(cfg.workDir, action, taskId, cfg.branch);
+    log('info', `Spawned ${action} worker`, { pid: spawned.pid, taskId: taskId ?? null, branch: cfg.branch });
 
     if (spawned.pid < 0) {
       log('warn', `Failed to get PID for ${action} worker`);
