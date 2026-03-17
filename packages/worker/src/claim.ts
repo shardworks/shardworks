@@ -1,4 +1,4 @@
-import { exec } from './utils.js';
+import { claim, claimById, release, listTasks } from '@shardworks/tq/src/tasks.js';
 
 /**
  * Returns true if a task has direct children in the 'draft' status.
@@ -8,13 +8,9 @@ import { exec } from './utils.js';
  * with the parent, it means there are no eligible children — but there may be
  * draft children that need refining before the parent can be implemented.
  */
-async function hasDraftChildren(workDir: string, taskId: string): Promise<boolean> {
-  const { stdout, exitCode } = await exec(
-    'tq', ['list', '--parent', taskId, '--status', 'draft'], workDir,
-  );
-  if (exitCode !== 0) return false;
+async function hasDraftChildren(taskId: string): Promise<boolean> {
   try {
-    const tasks = JSON.parse(stdout.trim()) as Array<unknown>;
+    const tasks = await listTasks({ parent_id: taskId, status: 'draft' });
     return tasks.length > 0;
   } catch {
     return false;
@@ -36,27 +32,19 @@ async function hasDraftChildren(workDir: string, taskId: string): Promise<boolea
  *
  * Returns the claimed task ID, or null if no suitable task is available.
  */
-export async function claimTask(agentId: string, workDir: string, claimDraft = false, role?: string, capabilities: string[] = []): Promise<string | null> {
-  const args = ['claim', '--agent', agentId];
-  if (claimDraft) args.push('--draft');
-  if (role) args.push('--role', role);
-  for (const tag of capabilities) args.push('--capability', tag);
-  const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
-  if (exitCode !== 0) {
-    throw new Error(`tq claim failed: ${stderr.trim() || stdout.trim()}`);
-  }
-  const result = JSON.parse(stdout.trim()) as { task: { id: string } | null };
+export async function claimTask(agentId: string, _workDir: string, claimDraft = false, role?: string, capabilities: string[] = []): Promise<string | null> {
+  const result = await claim(agentId, capabilities, claimDraft, role);
   const taskId = result?.task?.id ?? null;
   if (taskId === null) return null;
 
   // If we're an implementer (not a drafter) and the claimed task is a parent
   // container with unrefined draft children, release it so the conductor can
   // spawn a refiner to process those children first.
-  if (!claimDraft && await hasDraftChildren(workDir, taskId)) {
+  if (!claimDraft && await hasDraftChildren(taskId)) {
     process.stderr.write(
       `worker: releasing ${taskId} — parent task has unrefined draft children\n`,
     );
-    await releaseTask(agentId, workDir, taskId);
+    await releaseTask(agentId, _workDir, taskId);
     return null;
   }
 
@@ -68,28 +56,28 @@ export async function claimTask(agentId: string, workDir: string, claimDraft = f
  * Used in conducted mode where the conductor pre-selects the task.
  * Pass claimDraft=true for refiner roles that claim from the draft pool.
  *
+ * NOTE: Unlike the CLI `tq claim-id`, the library claimById() does not accept
+ * a capabilities parameter. The capabilities argument is accepted here for API
+ * compatibility but is silently dropped. If capabilities filtering on claim-id
+ * is needed, the library function signature must be extended first.
+ *
  * Returns the ID of the actually-claimed task, which may be a child of the
  * requested task if the tq-level claim redirected to an eligible descendant.
  */
-export async function claimTaskById(agentId: string, workDir: string, taskId: string, claimDraft = false, capabilities: string[] = []): Promise<string> {
-  const args = ['claim-id', taskId, '--agent', agentId];
-  if (claimDraft) args.push('--draft');
-  for (const tag of capabilities) args.push('--capability', tag);
-  const { stdout, stderr, exitCode } = await exec('tq', args, workDir);
-  if (exitCode !== 0) {
-    throw new Error(`tq claim-id failed: ${stderr.trim() || stdout.trim()}`);
-  }
-  const result = JSON.parse(stdout.trim()) as { task: { id: string } };
-  const claimedId = result.task.id;
+export async function claimTaskById(agentId: string, _workDir: string, taskId: string, claimDraft = false, _capabilities: string[] = []): Promise<string> {
+  const result = await claimById(taskId, agentId, claimDraft);
+  // claimById throws on failure; task is always non-null on success
+  const claimedId = result.task?.id;
+  if (!claimedId) throw new Error(`tq claim-id returned no task for ${taskId}`);
 
   // If we're an implementer and the claimed task is a parent with draft-only
   // children (no eligible children — otherwise tq would have redirected us),
   // release it. The conductor should spawn a refiner for those children.
-  if (!claimDraft && await hasDraftChildren(workDir, claimedId)) {
+  if (!claimDraft && await hasDraftChildren(claimedId)) {
     process.stderr.write(
       `worker: releasing ${claimedId} — parent task has unrefined draft children\n`,
     );
-    await releaseTask(agentId, workDir, claimedId);
+    await releaseTask(agentId, _workDir, claimedId);
     throw new Error(
       `Task ${claimedId} is a parent with unrefined draft children; cannot implement directly`,
     );
@@ -102,10 +90,6 @@ export async function claimTaskById(agentId: string, workDir: string, taskId: st
  * Release a claimed task back to `eligible` so another worker can pick it up.
  * Used when the worker hits a rate limit or other transient failure.
  */
-export async function releaseTask(agentId: string, workDir: string, taskId: string): Promise<void> {
-  const args = ['release', taskId, '--agent', agentId];
-  const { stderr, exitCode } = await exec('tq', args, workDir);
-  if (exitCode !== 0) {
-    throw new Error(`tq release failed: ${stderr.trim()}`);
-  }
+export async function releaseTask(agentId: string, _workDir: string, taskId: string): Promise<void> {
+  await release(taskId, agentId);
 }
