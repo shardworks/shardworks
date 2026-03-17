@@ -752,6 +752,8 @@ export async function dashboard(): Promise<void> {
 
   async function refreshLogTail(): Promise<void> {
     if (!currentLogTaskId) return;
+    if (tailRefreshing) return;
+    tailRefreshing = true;
 
     // If we have a tracked log path, check for new content there first.
     // Also check for newer log files matching this task (e.g. on retry).
@@ -810,6 +812,8 @@ export async function dashboard(): Promise<void> {
       }
     } catch {
       // ignore
+    } finally {
+      tailRefreshing = false;
     }
   }
 
@@ -898,7 +902,12 @@ export async function dashboard(): Promise<void> {
 
   // ── Refresh loop ───────────────────────────────────────────────────────
 
+  let refreshing = false;
+  let tailRefreshing = false;
+
   async function refresh(): Promise<void> {
+    if (refreshing) return;
+    refreshing = true;
     try {
       const [counts, workers, tree] = await Promise.all([
         fetchStatusCounts(),
@@ -944,6 +953,8 @@ export async function dashboard(): Promise<void> {
     } catch (err) {
       statusBar.setContent(` {red-fg}Error: ${err}{/red-fg}`);
       screen.render();
+    } finally {
+      refreshing = false;
     }
   }
 
@@ -1300,12 +1311,12 @@ export async function dashboard(): Promise<void> {
 
   // Refresh every 3 seconds
   const refreshTimer = setInterval(() => {
-    refresh();
+    refresh().catch(() => { /* errors handled inside refresh */ });
   }, 3000);
 
   // Refresh log tail more frequently
   const logTimer = setInterval(() => {
-    refreshLogTail();
+    refreshLogTail().catch(() => { /* errors handled inside refreshLogTail */ });
   }, 1000);
 
   screen.on('destroy', () => {
