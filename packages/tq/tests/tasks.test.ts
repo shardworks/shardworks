@@ -1457,6 +1457,33 @@ describe('retryTask', () => {
     mockExecute.mockResolvedValueOnce([[row]]);
     await expect(retryTask('tq-rtr00005', 'planner-1')).rejects.toThrow(/cannot be retried/);
   });
+
+  it('throws when task is completed (regression: completed tasks must not be silently re-queued)', async () => {
+    const row = makeTaskRow({
+      id: 'tq-rtr00006',
+      status: 'completed',
+      result_payload: { answer: 42 },
+      completed_at: new Date(),
+    });
+    mockExecute.mockResolvedValueOnce([[row]]);
+    await expect(retryTask('tq-rtr00006', 'planner-1')).rejects.toThrow(/cannot be retried/);
+  });
+
+  it('throws when task is in_progress (cannot re-queue a running task)', async () => {
+    const row = makeTaskRow({
+      id: 'tq-rtr00007',
+      status: 'in_progress',
+      claimed_by: 'some-agent',
+    });
+    mockExecute.mockResolvedValueOnce([[row]]);
+    await expect(retryTask('tq-rtr00007', 'planner-1')).rejects.toThrow(/cannot be retried/);
+  });
+
+  it('throws when task is pending (awaiting deps, cannot retry)', async () => {
+    const row = makeTaskRow({ id: 'tq-rtr00008', status: 'pending' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+    await expect(retryTask('tq-rtr00008', 'planner-1')).rejects.toThrow(/cannot be retried/);
+  });
 });
 
 // ---------------------------------------------------------------------------
