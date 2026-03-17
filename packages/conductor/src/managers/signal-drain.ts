@@ -20,7 +20,8 @@ export const PENDING_SPAWN_REQUESTS_KEY = 'pendingSpawnRequests';
  *   - Separate spawn_request signals (forwarded to the spawner via shared context)
  *     from operational signals (rate_limited, crashed, merge_failed).
  *   - Process operational signals into alerts.
- *   - If a rate_limited signal triggers shutdown, abort the tick.
+ *   - If a rate_limited signal is received, abort the tick early so the spawner
+ *     does not launch new workers this tick (rateLimitedUntil suppresses subsequent ticks).
  */
 export class SignalDrainManager implements Manager {
   readonly name = 'signal-drain';
@@ -54,8 +55,7 @@ export class SignalDrainManager implements Manager {
             operationalSignals,
           );
           if (rateLimited) {
-            ctx.log('warn', 'Rate limit signal received — shutting down');
-            await ctx.shutdown('rate_limited');
+            ctx.log('warn', 'Rate limit signal received — pausing spawning until hold-off expires');
             return { abort: true };
           }
         }
