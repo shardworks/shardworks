@@ -81,25 +81,66 @@ async function postWebhook(url: string, payload: AlertPayload): Promise<void> {
 // Sentinel task
 // ---------------------------------------------------------------------------
 
+/** Sentinel description prefix used for dedup matching. */
+const SENTINEL_PREFIX = '⚠ Human attention needed';
+
+/**
+ * Return the ID of an existing uncompleted sentinel task for this alert type,
+ * or null if none exists.  Checks eligible, pending, and in_progress states.
+ */
+async function findExistingSentinel(
+  workDir: string,
+  type: AlertType,
+): Promise<string | null> {
+  const activeStatuses = ['eligible', 'pending', 'in_progress'] as const;
+  for (const status of activeStatuses) {
+    try {
+      const tasks = await runTq<Array<{
+        id: string;
+        description: string;
+        assigned_role: string | null;
+      }>>(workDir, ['list', '--status', status]);
+      const match = tasks.find(
+        t => t.assigned_role === 'human' &&
+             t.description.startsWith(SENTINEL_PREFIX) &&
+             t.description.includes(`[${type}]`),
+      );
+      if (match) return match.id;
+    } catch {
+      // Ignore query errors; we'll attempt creation anyway.
+    }
+  }
+  return null;
+}
+
 /**
  * Enqueue a high-priority sentinel task with assigned_role=human so it
  * shows up visibly in the dashboard and task list.  No worker will claim it —
  * a human must manually cancel it when the issue is resolved.
+ *
+ * Returns the task ID (existing or newly created), or null on failure.
  */
 async function createSentinelTask(
   workDir: string,
   type: AlertType,
   msg: string,
-): Promise<string | null> {
+): Promise<{ id: string; existing: boolean } | null> {
+  // Dedup: skip creation if an uncompleted sentinel of this type already exists.
+  const existingId = await findExistingSentinel(workDir, type);
+  if (existingId) {
+    return { id: existingId, existing: true };
+  }
+
   try {
-    const description = `⚠ Human attention needed [${type}]: ${msg}`;
+    const description = `${SENTINEL_PREFIX} [${type}]: ${msg}`;
     const result = await runTq<{ id: string }>(workDir, [
       'enqueue', description,
+      '--payload', JSON.stringify({ sentinel_type: type }),
       '--assigned-role', 'human',
       '--priority', '999',
       '--ready',
     ]);
-    return result.id;
+    return { id: result.id, existing: false };
   } catch {
     return null;
   }
@@ -143,9 +184,13 @@ export async function fireAlert(
   }
 
   // 2. Sentinel task in the queue
-  const taskId = await createSentinelTask(cfg.workDir, type, msg);
-  if (taskId) {
-    log('info', 'Created sentinel task', { type, taskId });
+  const sentinel = await createSentinelTask(cfg.workDir, type, msg);
+  if (sentinel) {
+    if (sentinel.existing) {
+      log('info', 'Sentinel task already exists (skipped creation)', { type, taskId: sentinel.id });
+    } else {
+      log('info', 'Created sentinel task', { type, taskId: sentinel.id });
+    }
   }
 }
 
