@@ -1,7 +1,8 @@
 import { createReadStream, existsSync, watchFile, unwatchFile } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { workerLogFiles, resolveTaskLog, taskLogPath, formatEventPlain, type StreamEvent } from './log.js';
+import { workerLogFiles, resolveTaskLog, taskLogPath, workLogsDir, formatEventPlain, type StreamEvent } from './log.js';
 
 /**
  * Tail a worker's latest log file (or a specific task log), printing
@@ -93,9 +94,6 @@ async function resolveLogPath(id: string): Promise<string | null> {
     if (flat) return flat;
 
     // Fall back to nested layout: search all worker dirs
-    const { readdir } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const { workLogsDir } = await import('./log.js');
     const base = workLogsDir();
     try {
       const workers = await readdir(base, { withFileTypes: true });
