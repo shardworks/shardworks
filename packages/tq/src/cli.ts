@@ -100,9 +100,11 @@ program
   .option('--created-by <id>', 'Creator identifier', DEFAULT_CREATED_BY)
   .option('--ready', 'Skip draft status; make the task eligible/pending immediately')
   .option('--assigned-role <role>', 'Role that should complete this task (e.g. planner, implementer)')
+  .option('--tag <tag>', 'Capability tag required to claim this task (repeatable)', collect, [] as string[])
   .action(async (description: string, opts: {
     payload?: string; dependsOn: string[]; parent?: string;
     priority: number; createdBy: string; ready?: boolean; assignedRole?: string;
+    tag: string[];
   }) => {
     await run(async () => {
       const input: EnqueueInput = {
@@ -114,6 +116,7 @@ program
         payload: opts.payload ? JSON.parse(opts.payload) : undefined,
         skipDraft: opts.ready ?? false,
         assigned_role: opts.assignedRole,
+        tags: opts.tag.length > 0 ? opts.tag : undefined,
       };
       return enqueue(input);
     });

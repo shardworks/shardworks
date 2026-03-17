@@ -17,6 +17,8 @@ export interface EnqueueInput {
   skipDraft?: boolean;
   /** Optional role that should complete this task (e.g. 'planner', 'implementer'). */
   assigned_role?: string;
+  /** Optional capability tags required to claim this task (e.g. ['gpu', 'large-context']). */
+  tags?: string[];
 }
 
 /**

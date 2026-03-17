@@ -205,6 +205,13 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
       );
     }
 
+    for (const tag of input.tags ?? []) {
+      await conn.execute(
+        'INSERT INTO task_tags (task_id, tag) VALUES (?, ?)',
+        [id, tag],
+      );
+    }
+
     return rowToTask(
       {
         id, description: input.description,
@@ -591,6 +598,13 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
         await conn.execute(
           'INSERT INTO task_dependencies (task_id, dep_id) VALUES (?, ?)',
           [id, depId],
+        );
+      }
+
+      for (const tag of t.tags ?? []) {
+        await conn.execute(
+          'INSERT INTO task_tags (task_id, tag) VALUES (?, ?)',
+          [id, tag],
         );
       }
 
