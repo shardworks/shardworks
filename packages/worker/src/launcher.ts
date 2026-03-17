@@ -35,7 +35,10 @@ export interface WorkerMetadata {
   role: string;
   session_id: string;
   log_path: string;
-  pid: number;
+  /** PID of the worker Node.js process (parent of Claude). */
+  worker_pid: number;
+  /** PID of the spawned Claude child process. */
+  claude_pid: number;
 }
 
 /** Captured from the final "result" event in Claude's stream-json output. */
@@ -444,7 +447,8 @@ export function launch(config: ConductedConfig): LaunchHandle {
         role: config.role,
         session_id: sid,
         log_path: logPath,
-        pid: process.pid,
+        worker_pid: process.pid,
+        claude_pid: child.pid ?? -1,
       });
     }
 
