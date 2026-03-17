@@ -134,7 +134,7 @@
       ]
     },
     {
-      "id": "senior-implementer",
+      "id": "ace",
       "description": "Opus-powered implementer for complex, high-stakes, or multi-file tasks.",
       "claimDraft": false,
       "model": "claude-opus-4-6",

@@ -621,7 +621,7 @@ export async function dashboard(): Promise<void> {
       case 'implementer': return '{green-fg}impl{/green-fg}';
       case 'refiner':     return '{yellow-fg}rfnr{/yellow-fg}';
       case 'planner':     return '{cyan-fg}plnr{/cyan-fg}';
-      case 'senior-implementer': return '{magenta-fg}snr!{/magenta-fg}';
+      case 'ace':             return '{magenta-fg} ace{/magenta-fg}';
       case 'tq-writer':   return '{grey-fg}writ{/grey-fg}';
       case 'tq-reader':   return '{grey-fg}read{/grey-fg}';
       default:            return role ? `{grey-fg}${role.slice(0, 4)}{/grey-fg}` : '{grey-fg}  ? {/grey-fg}';
