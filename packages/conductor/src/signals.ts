@@ -87,7 +87,15 @@ export async function readNewSignals(
     return { signals: [], newOffset: offset };
   }
 
-  if (fileSize <= offset) {
+  if (fileSize < offset) {
+    // File was truncated or rotated — reset to the beginning
+    console.warn(
+      `[signals] Signal file truncated (fileSize=${fileSize} < offset=${offset}); resetting offset to 0`,
+    );
+    offset = 0;
+  }
+
+  if (fileSize === offset) {
     return { signals: [], newOffset: offset };
   }
 
