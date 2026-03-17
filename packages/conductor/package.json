@@ -12,6 +12,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@shardworks/db": "*",
     "@shardworks/shared-types": "workspace:*",
     "@shardworks/tq": "*",
     "commander": "^13.1.0",

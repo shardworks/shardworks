@@ -1,23 +1,12 @@
 import mysql from 'mysql2/promise';
 import type { PoolConnection } from 'mysql2/promise';
+import {
+  createPool,
+  withTransaction as _withTransaction,
+  checkDoltStatus as _checkDoltStatus,
+} from '@shardworks/db';
 
-const host = process.env.DOLT_HOST ?? 'dolt';
-const port = parseInt(process.env.DOLT_PORT ?? '3306', 10);
-const user = process.env.DOLT_USER ?? 'root';
-const password = process.env.DOLT_PASSWORD ?? '';
-const database = process.env.DOLT_DATABASE ?? 'shardworks';
-
-export const pool = mysql.createPool({
-  host,
-  port,
-  user,
-  password,
-  database,
-  waitForConnections: true,
-  connectionLimit: 10,
-  // Return dates as Date objects rather than strings
-  dateStrings: false,
-});
+export const pool = createPool({ connectionLimit: 10 });
 
 /**
  * Run `fn` inside a MySQL transaction on `conn`. Commits on success,
@@ -27,15 +16,7 @@ export async function withTransaction<T>(
   conn: PoolConnection,
   fn: (conn: PoolConnection) => Promise<T>,
 ): Promise<T> {
-  await conn.beginTransaction();
-  try {
-    const result = await fn(conn);
-    await conn.commit();
-    return result;
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  }
+  return _withTransaction(conn, fn);
 }
 
 /**
@@ -78,7 +59,7 @@ export async function withCommit<T>(
     if (branch) {
       await conn.execute('CALL dolt_checkout(?)', [branch]);
     }
-    const result = await withTransaction(conn, fn);
+    const result = await _withTransaction(conn, fn);
     try {
       // Guard: only commit if there are actual changes in the working set.
       const [statusRows] = await conn.execute<mysql.RowDataPacket[]>(
@@ -123,25 +104,5 @@ export async function withCommit<T>(
  *          is clean. Logs a warning for each dirty table.
  */
 export async function checkDoltStatus(): Promise<string[]> {
-  const conn = await pool.getConnection();
-  try {
-    const [rows] = await conn.execute<mysql.RowDataPacket[]>(
-      "SELECT table_name, status FROM dolt_status",
-    );
-    if (rows.length === 0) {
-      return [];
-    }
-    console.warn(
-      '[dolt] ⚠️  Uncommitted changes detected in Dolt working set — ' +
-      'a previous withCommit() call may have committed to MySQL without ' +
-      'creating a Dolt history entry. Run `dolt_commit` manually or ' +
-      'investigate before proceeding.',
-    );
-    for (const row of rows) {
-      console.warn(`[dolt]   ${row.status}\t${row.table_name}`);
-    }
-    return rows.map((r) => String(r.table_name));
-  } finally {
-    conn.release();
-  }
+  return _checkDoltStatus(pool);
 }
