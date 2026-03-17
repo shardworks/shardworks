@@ -300,7 +300,7 @@ describe('buildArgs', () => {
   };
 
   it('includes required claude CLI flags', () => {
-    const args = buildArgs(baseConfig);
+    const { args } = buildArgs(baseConfig);
     expect(args).toContain('-p');
     expect(args).toContain('--verbose');
     expect(args).toContain('--output-format');
@@ -311,7 +311,7 @@ describe('buildArgs', () => {
 
   it('includes --model from role (if set) or config', () => {
     // PLANNER_ROLE has model: 'claude-haiku-4-5'
-    const args = buildArgs({ ...baseConfig, role: 'planner' });
+    const { args } = buildArgs({ ...baseConfig, role: 'planner' });
     expect(args).toContain('--model');
     const modelIdx = args.indexOf('--model');
     expect(args[modelIdx + 1]).toBe('claude-haiku-4-5');
@@ -319,14 +319,14 @@ describe('buildArgs', () => {
 
   it('falls back to config.claudeModel when role has no model override', () => {
     // SAMPLE_ROLE (implementer) has no model override
-    const args = buildArgs({ ...baseConfig, claudeModel: 'claude-opus-4-5' });
+    const { args } = buildArgs({ ...baseConfig, claudeModel: 'claude-opus-4-5' });
     const modelIdx = args.indexOf('--model');
     expect(args[modelIdx + 1]).toBe('claude-opus-4-5');
   });
 
   it('includes --worktree with task ID for roles that need file editing', () => {
     // implementer has no allowedTools restriction → needs worktree
-    const args = buildArgs(baseConfig);
+    const { args } = buildArgs(baseConfig);
     expect(args).toContain('--worktree');
     const wtIdx = args.indexOf('--worktree');
     expect(args[wtIdx + 1]).toBe('tq-buildtest');
@@ -334,40 +334,40 @@ describe('buildArgs', () => {
 
   it('omits --worktree for roles restricted to non-editing tools', () => {
     // planner role has allowedTools: ['Bash', 'Read'] — no Write/Edit
-    const args = buildArgs({ ...baseConfig, role: 'planner' });
+    const { args } = buildArgs({ ...baseConfig, role: 'planner' });
     expect(args).not.toContain('--worktree');
   });
 
   it('includes --tools when allowedTools is set in the role', () => {
-    const args = buildArgs({ ...baseConfig, role: 'planner' });
+    const { args } = buildArgs({ ...baseConfig, role: 'planner' });
     expect(args).toContain('--tools');
     const toolsIdx = args.indexOf('--tools');
     expect(args[toolsIdx + 1]).toBe('Bash,Read');
   });
 
   it('omits --tools when allowedTools is not set', () => {
-    const args = buildArgs(baseConfig); // implementer has no allowedTools
+    const { args } = buildArgs(baseConfig); // implementer has no allowedTools
     expect(args).not.toContain('--tools');
   });
 
   it('includes --max-budget-usd when claudeMaxBudgetUsd is set', () => {
-    const args = buildArgs({ ...baseConfig, claudeMaxBudgetUsd: 2.5 });
+    const { args } = buildArgs({ ...baseConfig, claudeMaxBudgetUsd: 2.5 });
     expect(args).toContain('--max-budget-usd');
     const budgetIdx = args.indexOf('--max-budget-usd');
     expect(args[budgetIdx + 1]).toBe('2.5');
   });
 
   it('omits --max-budget-usd when claudeMaxBudgetUsd is not set', () => {
-    const args = buildArgs(baseConfig);
+    const { args } = buildArgs(baseConfig);
     expect(args).not.toContain('--max-budget-usd');
   });
 
-  it('includes --system-prompt and the rendered work prompt as last arg', () => {
-    const args = buildArgs(baseConfig);
+  it('includes --system-prompt in args and returns a non-empty work prompt', () => {
+    const { args, prompt } = buildArgs(baseConfig);
     expect(args).toContain('--system-prompt');
-    // The work prompt is the last element
-    const lastArg = args[args.length - 1]!;
-    expect(lastArg).toContain('tq-buildtest'); // taskId in work prompt
+    // The work prompt is returned separately (piped to stdin) and must be non-empty
+    expect(prompt.length).toBeGreaterThan(0);
+    expect(prompt).toContain('tq-buildtest'); // taskId substituted into work prompt
   });
 });
 
