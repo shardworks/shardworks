@@ -47,6 +47,10 @@ export interface TaskCounts {
   completed: number;
   /** Failed tasks. */
   failed: number;
+  /** Cancelled tasks. */
+  cancelled: number;
+  /** Blocked tasks (dependencies failed/cancelled). */
+  blocked: number;
   /** Highest priority among draft tasks (0 if none). Used for priority-aware scheduling. */
   maxDraftPriority: number;
   /** Highest priority among eligible tasks (0 if none). Used for priority-aware scheduling. */
@@ -90,6 +94,8 @@ export async function queryCounts(): Promise<TaskCounts> {
     pending: 0,
     completed: 0,
     failed: 0,
+    cancelled: 0,
+    blocked: 0,
     maxDraftPriority: 0,
     maxEligiblePriority: 0,
     eligibleBlockedByChildren: 0,
@@ -120,6 +126,8 @@ export async function queryCounts(): Promise<TaskCounts> {
         break;
       case 'completed':   counts.completed  += n; break;
       case 'failed':      counts.failed     += n; break;
+      case 'cancelled':   counts.cancelled  += n; break;
+      case 'blocked':     counts.blocked    += n; break;
     }
   }
 
