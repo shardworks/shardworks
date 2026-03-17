@@ -211,6 +211,13 @@ program
           : '';
         console.log(`  Phase:        ${state.phase}${up ? `  (${up})` : ''}`);
         console.log(`  Last tick:    ${state.lastTickAt ? new Date(state.lastTickAt).toLocaleString() : 'never'}`);
+
+        // Show active managers if available
+        const managers = state.managers;
+        if (managers && managers.length > 0) {
+          console.log(`  Managers:     ${managers.join(', ')}`);
+        }
+
         console.log();
         console.log('  Stats:');
         console.log(`    Ticks run:       ${state.stats.tickCount}`);

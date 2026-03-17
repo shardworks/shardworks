@@ -148,6 +148,8 @@ export interface ConductorState {
   lastAlertAt: Partial<Record<AlertType, string>>;
   activeWorkers: ActiveWorker[];
   stats: ConductorStats;
+  /** Names of active manager modules (populated at startup). */
+  managers?: string[];
 }
 
 /** Structured logger function passed through the daemon tick stack. */
