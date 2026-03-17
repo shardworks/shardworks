@@ -22,6 +22,7 @@ import {
   edit,
   cancel,
   retryTask,
+  rejectTask,
   heartbeat,
   releaseTimedOut,
   subtree,
@@ -246,6 +247,73 @@ program
   .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
   .action(async (id: string, opts: { agent: string }) => {
     await run(() => retryTask(id, opts.agent));
+  });
+
+// ── tq reject ────────────────────────────────────────────────────────────────
+
+program
+  .command('reject <id>')
+  .description(
+    'Operator tool: reset a completed or failed task for re-execution.\n' +
+    'Clears result_payload, result_summary, claimed_by, claimed_at, completed_at\n' +
+    'and resets attempt_count to 0.  Optionally cleans up the git worktree and\n' +
+    'branch (worktree-<id>) when --work-dir is provided.',
+  )
+  .option('--reason <text>', 'Rejection reason (stored as audit trail in result_payload)')
+  .option('--agent <id>', 'Actor identifier', DEFAULT_AGENT_ID)
+  .option(
+    '--work-dir <path>',
+    'Repo root for worktree cleanup — when provided, removes the worktree\n' +
+    '  directory (.claude/worktrees/<id>) and deletes the worktree-<id> branch.',
+  )
+  .action(async (id: string, opts: { reason?: string; agent: string; workDir?: string }) => {
+    await run(async () => {
+      // 1. Reset task state in DB
+      const task = await rejectTask(id, opts.agent, opts.reason);
+
+      // 2. Optionally clean up the git worktree and local branch
+      let worktreeCleanup: Record<string, unknown> | null = null;
+      if (opts.workDir) {
+        const { existsSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const { execFile } = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execFileAsync = promisify(execFile);
+
+        const branchName   = `worktree-${id}`;
+        const worktreePath = join(opts.workDir, '.claude', 'worktrees', id);
+
+        const cleanup: { worktree?: string; branch?: string } = {};
+
+        // Remove the git worktree (directory + registration) if it exists
+        if (existsSync(worktreePath)) {
+          try {
+            await execFileAsync('git', ['worktree', 'remove', '--force', worktreePath], { cwd: opts.workDir });
+            cleanup.worktree = 'removed';
+          } catch (err) {
+            cleanup.worktree = `error: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        } else {
+          cleanup.worktree = 'not-found (skipped)';
+        }
+
+        // Delete the local branch (force-delete, the branch may not be merged)
+        try {
+          await execFileAsync('git', ['branch', '-D', branchName], { cwd: opts.workDir });
+          cleanup.branch = 'deleted';
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // Not an error if the branch simply doesn't exist
+          cleanup.branch = msg.includes('not found') || msg.includes('error: branch')
+            ? 'not-found (skipped)'
+            : `error: ${msg}`;
+        }
+
+        worktreeCleanup = { worktree_path: worktreePath, branch: branchName, ...cleanup };
+      }
+
+      return { task, ...(worktreeCleanup ? { worktree_cleanup: worktreeCleanup } : {}) };
+    });
   });
 
 // ── tq publish ──────────────────────────────────────────────────────────────
