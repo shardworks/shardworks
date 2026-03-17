@@ -1324,6 +1324,87 @@ export async function retryTask(taskId: string, actorId: string): Promise<Task> 
 }
 
 // ---------------------------------------------------------------------------
+// Reject — operator tool to reset completed/failed task for re-execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Reset a completed or failed task back to eligible/pending so it can be
+ * re-executed.  This is an operator-only escape hatch — no agent ownership
+ * check is performed.
+ *
+ * - result_payload, result_summary, claimed_by, claimed_at, completed_at are
+ *   all cleared.
+ * - attempt_count is reset to 0.
+ * - If the task was failed, any blocked dependents are un-blocked via
+ *   promoteUnblocked() so they can wait normally for the re-run.
+ * - The new status is 'eligible' when all deps are completed, 'pending' when
+ *   at least one dep is still in flight.
+ */
+export async function rejectTask(taskId: string, actorId: string, reason?: string): Promise<Task> {
+  return withCommit(`[reject] ${taskId} by ${actorId}`, async conn => {
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id = ? FOR UPDATE`,
+      [taskId],
+    );
+    if (rows.length === 0) throw new Error(`Task not found: ${taskId}`);
+    const row = rows[0]!;
+    if (row.status !== 'completed' && row.status !== 'failed') {
+      throw new Error(
+        `Task ${taskId} cannot be rejected (status: ${row.status}). ` +
+        `Only completed or failed tasks can be rejected.`,
+      );
+    }
+
+    const wasFailed = row.status === 'failed';
+
+    // Check whether all dependencies are satisfied
+    const [depRows] = await conn.execute<RowDataPacket[]>(
+      `SELECT t.status
+       FROM task_dependencies td
+       JOIN tasks t ON t.id = td.dep_id
+       WHERE td.task_id = ?`,
+      [taskId],
+    );
+    const allDepsCompleted = depRows.every(r => r.status === 'completed');
+    const newStatus = allDepsCompleted ? 'eligible' : 'pending';
+    const now = new Date();
+
+    // Store the rejection reason in result_payload so there is an audit trail
+    const rejectRecord = reason ? JSON.stringify({ rejected_by: actorId, reason }) : null;
+
+    await conn.execute(
+      `UPDATE tasks
+       SET status = ?, attempt_count = 0, claimed_by = NULL, claimed_at = NULL,
+           completed_at = NULL, result_payload = ?, result_summary = NULL,
+           eligible_at = ?
+       WHERE id = ?`,
+      [newStatus, rejectRecord, newStatus === 'eligible' ? now : null, taskId],
+    );
+
+    // Un-block tasks that were blocked solely because this task had failed
+    if (wasFailed) {
+      await promoteUnblocked(conn, taskId);
+    }
+
+    const depsMap = await attachDeps(conn, [taskId]);
+    return rowToTask(
+      {
+        ...row,
+        status: newStatus,
+        attempt_count: 0,
+        claimed_by: null,
+        claimed_at: null,
+        completed_at: null,
+        result_payload: rejectRecord ? JSON.parse(rejectRecord) : null,
+        result_summary: null,
+        eligible_at: newStatus === 'eligible' ? now : null,
+      },
+      depsMap.get(taskId) ?? [],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // T12 — Subtree + ready
 // ---------------------------------------------------------------------------
 

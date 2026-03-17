@@ -62,6 +62,15 @@ draft → in_progress → (publish) → pending → eligible → in_progress →
 New tasks start as `draft` unless `--ready` is passed. When all dependencies of a
 `pending` task complete, it automatically becomes `eligible`.
 
+### Operator commands
+
+```bash
+# Reset a completed or failed task for re-execution (operator override — no ownership check).
+# Clears result, resets attempt_count to 0.  If the task was failed, blocked dependents
+# are automatically un-blocked.  --work-dir triggers git worktree + branch cleanup.
+tq reject <id> [--reason '<text>'] [--agent <id>] [--work-dir <path>]
+```
+
 ### Planner commands
 
 Safe to run while other agents work. Only affect tasks in mutable states (draft, pending, eligible).
