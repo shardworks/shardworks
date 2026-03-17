@@ -228,15 +228,17 @@ export class SpawnerManager implements Manager {
     return roles;
   }
 
-  private decideNextAction(
+  /**
+   * Build the list of roles that have eligible tasks ready to be worked on.
+   *
+   * This is the single source of truth for "what can we spawn right now?"
+   * Both `decideNextAction` and `autoDetectRole` call this and then apply
+   * their own policy (cap/floor handling, priority comparison, etc.) on top.
+   */
+  private buildSpawnableRoles(
     counts: TaskCounts,
-    refinerCount: number,
-    refinerCap: number,
-    refinerFloor: number,
     knownRoles: Set<string>,
-  ): string | null {
-    const canRefine = counts.draft > 0 && refinerCount < refinerCap;
-
+  ): Array<{ spawnRole: string; count: number }> {
     const spawnableRoles: Array<{ spawnRole: string; count: number }> = [];
     for (const [assignedRole, count] of Object.entries(counts.eligibleByRole)) {
       if (count <= 0) continue;
@@ -249,7 +251,18 @@ export class SpawnerManager implements Manager {
         spawnableRoles.push({ spawnRole: assignedRole, count });
       }
     }
+    return spawnableRoles;
+  }
 
+  private decideNextAction(
+    counts: TaskCounts,
+    refinerCount: number,
+    refinerCap: number,
+    refinerFloor: number,
+    knownRoles: Set<string>,
+  ): string | null {
+    const canRefine = counts.draft > 0 && refinerCount < refinerCap;
+    const spawnableRoles = this.buildSpawnableRoles(counts, knownRoles);
     const hasEligibleWork = spawnableRoles.length > 0;
 
     if (canRefine && refinerCount < refinerFloor) return 'refiner';
@@ -267,17 +280,7 @@ export class SpawnerManager implements Manager {
   }
 
   private autoDetectRole(counts: TaskCounts, knownRoles: Set<string>): string | null {
-    const spawnableRoles: Array<{ spawnRole: string; count: number }> = [];
-    for (const [assignedRole, count] of Object.entries(counts.eligibleByRole)) {
-      if (count <= 0) continue;
-      if (assignedRole === '') {
-        const implementable = Math.max(0, count - counts.eligibleBlockedByChildren);
-        if (implementable > 0) spawnableRoles.push({ spawnRole: 'implementer', count: implementable });
-      } else if (knownRoles.has(assignedRole)) {
-        spawnableRoles.push({ spawnRole: assignedRole, count });
-      }
-    }
-
+    const spawnableRoles = this.buildSpawnableRoles(counts, knownRoles);
     const hasEligibleWork = spawnableRoles.length > 0;
 
     if (hasEligibleWork && counts.draft > 0) {
