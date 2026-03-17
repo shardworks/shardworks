@@ -29,9 +29,14 @@ export async function watch(id: string): Promise<void> {
     await printLines(logPath, 0);
   }
 
-  // Watch for new data
-  const poll = setInterval(async () => {
+  // Watch for new data using a single watcher with an in-flight guard to
+  // prevent concurrent reads from overlapping on the shared `offset` variable.
+  let reading = false;
+  watchFile(logPath, { interval: 250 }, async (curr) => {
+    if (curr.size <= offset || reading) return;
+    reading = true;
     try {
+      // Re-check offset inside the guard in case another callback fired first
       const s = await stat(logPath);
       if (s.size > offset) {
         await printLines(logPath, offset);
@@ -39,20 +44,13 @@ export async function watch(id: string): Promise<void> {
       }
     } catch {
       // File may not exist yet — keep waiting
-    }
-  }, 250);
-
-  // Also use fs.watchFile as a fallback for immediate notification
-  watchFile(logPath, { interval: 500 }, async (curr) => {
-    if (curr.size > offset) {
-      await printLines(logPath, offset);
-      offset = curr.size;
+    } finally {
+      reading = false;
     }
   });
 
   // Keep alive until Ctrl+C
   process.on('SIGINT', () => {
-    clearInterval(poll);
     unwatchFile(logPath);
     process.stderr.write('\n');
     process.exit(0);
