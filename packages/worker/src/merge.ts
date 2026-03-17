@@ -236,8 +236,10 @@ async function pushWithRetry(workDir: string): Promise<{ ok: boolean; msg: strin
 /**
  * Parse git's "untracked working tree files would be overwritten by merge"
  * error output and return the list of file paths that need to be removed.
+ *
+ * Exported for unit testing.
  */
-function parseUntrackedOverwriteFiles(stderr: string): string[] {
+export function parseUntrackedOverwriteFiles(stderr: string): string[] {
   const files: string[] = [];
   let capturing = false;
   for (const line of stderr.split('\n')) {

@@ -12,7 +12,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { exec as execReal } from '../src/utils.js';
 
 // Mock the entire utils module so no real child processes are spawned.
 vi.mock('../src/utils.js');
@@ -20,7 +19,7 @@ vi.mock('../src/utils.js');
 import { exec } from '../src/utils.js';
 import { claimTask, claimTaskById, releaseTask } from '../src/claim.js';
 
-const mockExec = exec as vi.MockedFunction<typeof execReal>;
+const mockExec = vi.mocked(exec);
 
 // Convenience helpers to build ExecResult objects.
 const ok = (stdout: string, stderr = '') => ({ stdout, stderr, exitCode: 0 });
