@@ -57,6 +57,10 @@ export interface LaunchResult {
   sessionId: string | null;
   /** Info from the final "result" event, or null if Claude never emitted one. */
   result: ResultInfo | null;
+  /** Commit hash from `tq session-start`, recorded before Claude was spawned.
+   *  Use with `tq diff <startCommitHash> <endCommitHash>` to see every DB
+   *  change made during this agent session. */
+  startCommitHash: string | null;
 }
 
 /** Returned by launch() so the caller can await metadata early and done later. */
@@ -191,6 +195,75 @@ function startHeartbeatLoop(
   }, intervalMs);
 
   return () => clearInterval(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Session bracket helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Call `tq session-start --agent <agentId>` and return the Dolt commit hash.
+ * Returns null on any error (errors are logged as warnings, never fatal).
+ */
+async function runTqSessionStart(agentId: string, workDir: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('tq', ['session-start', '--agent', agentId], {
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk: Buffer) => { out += chunk; });
+    child.stderr.on('data', (chunk: Buffer) => { err += chunk; });
+    child.on('error', (e) => {
+      process.stderr.write(`[session] warning: failed to spawn tq session-start: ${e.message}\n`);
+      resolve(null);
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        process.stderr.write(
+          `[session] warning: tq session-start exited ${code}: ${(err || out).trim()}\n`,
+        );
+        resolve(null);
+        return;
+      }
+      try {
+        const data = JSON.parse(out.trim()) as { commit_hash?: string };
+        resolve(data.commit_hash ?? null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * Call `tq session-end --agent <agentId>`.
+ * Errors are logged as warnings and never propagated.
+ */
+async function runTqSessionEnd(agentId: string, workDir: string): Promise<void> {
+  return new Promise((resolve) => {
+    const child = spawn('tq', ['session-end', '--agent', agentId], {
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk: Buffer) => { out += chunk; });
+    child.stderr.on('data', (chunk: Buffer) => { err += chunk; });
+    child.on('error', (e) => {
+      process.stderr.write(`[session] warning: failed to spawn tq session-end: ${e.message}\n`);
+      resolve();
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        process.stderr.write(
+          `[session] warning: tq session-end exited ${code}: ${(err || out).trim()}\n`,
+        );
+      }
+      resolve();
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +410,11 @@ export function launch(config: ConductedConfig): LaunchHandle {
     await mkdir(logDir, { recursive: true });
     const logStream = createWriteStream(logPath, { flags: 'a' });
 
+    // Record a Dolt commit bracket before spawning Claude so operators can
+    // later run `tq diff <startCommitHash> <endCommitHash>` to inspect all
+    // DB mutations made during this agent session.
+    const startCommitHash = await runTqSessionStart(config.agentId, config.workDir);
+
     const child = spawn('claude', args, {
       cwd: config.workDir,
       // Pipe both stdout (stream-json) and stderr (Claude's progress output)
@@ -414,24 +492,28 @@ export function launch(config: ConductedConfig): LaunchHandle {
     return new Promise<LaunchResult>((resolve, reject) => {
       child.on('error', (err) => {
         stopHeartbeat?.();
-        logStream.end();
-        // If metadata wasn't emitted yet, reject that promise too
-        if (!metadataEmitted) {
-          metadataEmitted = true;
-          rejectMetadata!(new Error(`Failed to spawn claude: ${err.message}`));
-        }
-        reject(new Error(`Failed to spawn claude: ${err.message}`));
+        void runTqSessionEnd(config.agentId, config.workDir).then(() => {
+          logStream.end();
+          // If metadata wasn't emitted yet, reject that promise too
+          if (!metadataEmitted) {
+            metadataEmitted = true;
+            rejectMetadata!(new Error(`Failed to spawn claude: ${err.message}`));
+          }
+          reject(new Error(`Failed to spawn claude: ${err.message}`));
+        });
       });
 
       child.on('close', (code) => {
         stopHeartbeat?.();
-        logStream.end();
-        // If session_id never appeared (e.g. Claude crashed immediately),
-        // still resolve metadata with empty session_id so the caller doesn't hang
-        if (!metadataEmitted) {
-          emitMetadata('');
-        }
-        resolve({ exitCode: code ?? 1, sessionId, result: resultInfo });
+        void runTqSessionEnd(config.agentId, config.workDir).then(() => {
+          logStream.end();
+          // If session_id never appeared (e.g. Claude crashed immediately),
+          // still resolve metadata with empty session_id so the caller doesn't hang
+          if (!metadataEmitted) {
+            emitMetadata('');
+          }
+          resolve({ exitCode: code ?? 1, sessionId, result: resultInfo, startCommitHash });
+        });
       });
     });
   })();
