@@ -18,7 +18,9 @@
         "Use {{agentId}} as --agent in all tq commands. See CLAUDE.md for tq reference.",
         "",
         "On tq complete, always include -r with a JSON result: what changed, key decisions,",
-        "and any follow-up items. This is the permanent record used by dependent agents."
+        "and any follow-up items. This is the permanent record used by dependent agents.",
+        "Also include --summary with a 1-2 sentence plain-text summary of what was done.",
+        "Example: tq complete <id> --agent <id> -r '<json>' --summary 'Added X to Y; fixed Z.'"
       ],
       "workPrompt": [
         "Work on task {{taskId}}.{{priorWorkNotice}}",
@@ -37,7 +39,8 @@
         "(e.g. run a script, chmod, npm link), do so via bash \u2014 but create the file itself",
         "with a relative path first, commit it, then run any live-application commands.",
         "",
-        "When done: /tq-complete with a detailed JSON result. If blocked: /tq-fail with reason."
+        "When done: /tq-complete with a detailed JSON result and --summary (1-2 sentence plain-text",
+        "summary of what was done). If blocked: /tq-fail with reason."
       ]
     },
     {
@@ -170,6 +173,8 @@
         "",
         "On tq complete, always include -r with a JSON result: what changed, key decisions,",
         "and any follow-up items. This is the permanent record used by dependent agents.",
+        "Also include --summary with a 1-2 sentence plain-text summary of what was done.",
+        "Example: tq complete <id> --agent <id> -r '<json>' --summary 'Added X to Y; fixed Z.'",
         "",
         "## Self-decomposition",
         "",
@@ -210,7 +215,8 @@
         "(e.g. run a script, chmod, npm link), do so via bash \u2014 but create the file itself",
         "with a relative path first, commit it, then run any live-application commands.",
         "",
-        "When done: /tq-complete with a detailed JSON result. If blocked: /tq-fail with reason."
+        "When done: /tq-complete with a detailed JSON result and --summary (1-2 sentence plain-text",
+        "summary of what was done). If blocked: /tq-fail with reason."
       ]
     },
     {
@@ -246,8 +252,9 @@
         "2. Use Read, Glob, and Grep to explore the targeted code thoroughly.",
         "3. For each actionable finding, create a draft ticket:",
         "   tq enqueue '[cleanup] <clear description>' --payload '{\"file\": \"...\", \"issue\": \"...\", \"suggestion\": \"...\"}'",
-        "4. When done, /tq-complete with a JSON result:",
-        "   {\"findings\": <count>, \"tickets_created\": [\"tq-xxx\", ...], \"summary\": \"...\"}",
+        "4. When done, /tq-complete with a JSON result and --summary:",
+        "   tq complete <id> -r '{\"findings\": <count>, \"tickets_created\": [...]}' --summary '...'",
+        "   The --summary should be 1-2 sentences describing what was found.",
         "",
         "Focus areas: error handling, missing validation, dead code, inconsistent patterns,",
         "missing tests, TODO/FIXME/HACK comments, type safety, resource leaks, race conditions.",

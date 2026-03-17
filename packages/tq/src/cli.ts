@@ -206,9 +206,10 @@ program
   .description('Mark a task as completed')
   .option('--agent <id>', 'Agent ID', DEFAULT_AGENT_ID)
   .option('-r, --result <json>', 'Result payload (JSON)')
-  .action(async (id: string, opts: { agent: string; result?: string }) => {
+  .option('--summary <text>', 'Short 1-2 sentence summary of the result (plain text)')
+  .action(async (id: string, opts: { agent: string; result?: string; summary?: string }) => {
     await run(() =>
-      complete(id, opts.agent, opts.result ? JSON.parse(opts.result) : undefined),
+      complete(id, opts.agent, opts.result ? JSON.parse(opts.result) : undefined, opts.summary),
     );
   });
 
