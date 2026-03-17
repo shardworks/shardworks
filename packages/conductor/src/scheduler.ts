@@ -218,7 +218,7 @@ export class DefaultScheduler implements Scheduler {
         });
         try {
           const counts = cachedCounts!;
-          const spawned = await this.doSpawn(cfg, state, log, role, counts);
+          const spawned = await this.doSpawn(cfg, state, log, role, counts, req.task_id);
           if (spawned) {
             state.stats.workersSpawned++;
             counts.inProgress++;
@@ -511,6 +511,10 @@ export class DefaultScheduler implements Scheduler {
    * Spawn a single worker of the given role.
    * Updates state.activeWorkers by pruning dead processes and appending the new one.
    * Returns null if the spawn failed to acquire a valid PID.
+   *
+   * When `taskId` is supplied the worker is started in conducted mode:
+   * it receives `--task-id` and will claim that specific task rather than
+   * racing for the next available one (eliminates the TOCTOU window).
    */
   private async doSpawn(
     cfg: ConductorConfig,
@@ -518,9 +522,10 @@ export class DefaultScheduler implements Scheduler {
     log: LogFn,
     action: string,
     _counts: TaskCounts,
+    taskId?: string,
   ): Promise<SpawnedWorker | null> {
-    const spawned = spawnWorker(cfg.workDir, action);
-    log('info', `Spawned ${action} worker`, { pid: spawned.pid });
+    const spawned = spawnWorker(cfg.workDir, action, taskId);
+    log('info', `Spawned ${action} worker`, { pid: spawned.pid, taskId: taskId ?? null });
 
     if (spawned.pid < 0) {
       log('warn', `Failed to get PID for ${action} worker`);

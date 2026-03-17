@@ -67,12 +67,20 @@ export interface SpawnedWorker {
  * The worker writes its own logs to data/work-logs/<taskId>.jsonl.
  * The conductor does not track individual worker lifecycle — it relies on
  * the DB (in_progress task count) as the source of truth.
+ *
+ * When `taskId` is provided the worker is started in conducted mode:
+ * `--task-id <taskId>` is passed so the worker claims that specific task
+ * rather than racing with other workers for the next available one.
  */
 export function spawnWorker(
   workDir: string,
   role: string,
+  taskId?: string,
 ): SpawnedWorker {
   const args: string[] = ['--role', role];
+  if (taskId) {
+    args.push('--task-id', taskId);
+  }
 
   const child = spawn('worker', args, {
     cwd: workDir,
@@ -88,7 +96,7 @@ export function spawnWorker(
   return {
     pid: child.pid ?? -1,
     role,
-    taskId: null,
+    taskId: taskId ?? null,
     startedAt: new Date().toISOString(),
   };
 }
