@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import type { Pool } from 'mysql2/promise';
+import { createPool } from '@shardworks/db';
 
 // ---------------------------------------------------------------------------
 // Connection pool
@@ -9,16 +10,7 @@ let _pool: Pool | null = null;
 
 export function getPool(): Pool {
   if (!_pool) {
-    _pool = mysql.createPool({
-      host: process.env['DOLT_HOST'] ?? 'dolt',
-      port: parseInt(process.env['DOLT_PORT'] ?? '3306', 10),
-      user: process.env['DOLT_USER'] ?? 'root',
-      password: process.env['DOLT_PASSWORD'] ?? '',
-      database: process.env['DOLT_DATABASE'] ?? 'shardworks',
-      waitForConnections: true,
-      connectionLimit: 5,
-      dateStrings: false,
-    });
+    _pool = createPool({ connectionLimit: 5 });
   }
   return _pool;
 }
@@ -154,4 +146,3 @@ export async function queryCounts(): Promise<TaskCounts> {
 
   return counts;
 }
-

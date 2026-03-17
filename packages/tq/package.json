@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@shardworks/db": "*",
     "@shardworks/shared-types": "*",
     "commander": "^12.0.0",
     "mysql2": "^3.11.0",
