@@ -19,17 +19,40 @@ export interface ConductorConfig {
 }
 
 export function loadConfig(overrides: Partial<ConductorConfig> = {}): ConductorConfig {
+  const maxWorkers = overrides.maxWorkers
+    ?? parseInt(process.env['CONDUCTOR_MAX_WORKERS'] ?? '3', 10);
+  if (!Number.isFinite(maxWorkers) || maxWorkers < 1) {
+    throw new Error(
+      `Invalid CONDUCTOR_MAX_WORKERS: "${process.env['CONDUCTOR_MAX_WORKERS']}". ` +
+      `Must be an integer >= 1.`
+    );
+  }
+
+  const pollIntervalMs = overrides.pollIntervalMs
+    ?? parseInt(process.env['CONDUCTOR_POLL_INTERVAL'] ?? '30', 10) * 1000;
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    throw new Error(
+      `Invalid CONDUCTOR_POLL_INTERVAL: "${process.env['CONDUCTOR_POLL_INTERVAL']}". ` +
+      `Must be a positive integer (seconds).`
+    );
+  }
+
+  const staleAfter = overrides.staleAfter
+    ?? process.env['CONDUCTOR_STALE_AFTER']
+    ?? '30m';
+  if (!staleAfter || staleAfter.trim() === '') {
+    throw new Error(
+      `Invalid CONDUCTOR_STALE_AFTER: value must be a non-empty duration string (e.g. "30m").`
+    );
+  }
+
   return {
     workDir: overrides.workDir
       ?? process.env['WORK_DIR']
       ?? process.cwd(),
-    maxWorkers: overrides.maxWorkers
-      ?? parseInt(process.env['CONDUCTOR_MAX_WORKERS'] ?? '3', 10),
-    pollIntervalMs: overrides.pollIntervalMs
-      ?? parseInt(process.env['CONDUCTOR_POLL_INTERVAL'] ?? '30', 10) * 1000,
-    staleAfter: overrides.staleAfter
-      ?? process.env['CONDUCTOR_STALE_AFTER']
-      ?? '30m',
+    maxWorkers,
+    pollIntervalMs,
+    staleAfter,
     alertWebhook: overrides.alertWebhook
       ?? process.env['CONDUCTOR_ALERT_WEBHOOK']
       ?? null,
