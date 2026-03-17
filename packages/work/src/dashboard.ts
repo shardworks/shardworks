@@ -240,6 +240,10 @@ export async function dashboard(): Promise<void> {
   let pipelineTaskMeta: Array<{ taskId: string; status: string; claimedBy: string | null }> = [];
   let statusBarTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Cached item lists — used to skip redundant setItems() calls
+  let prevPipelineItems: string[] = [];
+  let prevWorkersItems: string[] = [];
+
   // ── Data fetching ──────────────────────────────────────────────────────
 
   async function fetchStatusCounts(): Promise<StatusCounts> {
@@ -648,24 +652,35 @@ export async function dashboard(): Promise<void> {
   }
 
   function renderWorkersList(workers: ActiveWorker[]): void {
-    if (workers.length === 0) {
-      workersList.setItems(['{grey-fg}No active workers{/grey-fg}']);
-      return;
+    const items = workers.length === 0
+      ? ['{grey-fg}No active workers{/grey-fg}']
+      : workers.map((_w, i) => {
+          const w = workers[i]!;
+          const elapsed = w.claimedAt ? elapsedStr(w.claimedAt) : '?';
+          const shortId = w.agentId.slice(0, 8);
+          const desc = w.description.length > 30
+            ? w.description.slice(0, 27) + '...'
+            : w.description;
+          return `${shortId} │ ${roleTag(w.role)} │ ${w.taskId} │ ${desc} │ ${elapsed}`;
+        });
+
+    const changed = items.length !== prevWorkersItems.length ||
+      items.some((line, idx) => line !== prevWorkersItems[idx]);
+
+    if (changed) {
+      // Save/restore scroll base to prevent jump on content rebuild
+      const prevBase = (workersList as unknown as Record<string, number>)['childBase'] ?? 0;
+      workersList.setItems(items);
+      (workersList as unknown as Record<string, number>)['childBase'] = prevBase;
+      prevWorkersItems = items;
     }
-    const items = workers.map((_w, i) => {
-      const w = workers[i]!;
-      const elapsed = w.claimedAt ? elapsedStr(w.claimedAt) : '?';
-      const shortId = w.agentId.slice(0, 8);
-      const desc = w.description.length > 30
-        ? w.description.slice(0, 27) + '...'
-        : w.description;
-      return `${shortId} │ ${roleTag(w.role)} │ ${w.taskId} │ ${desc} │ ${elapsed}`;
-    });
-    workersList.setItems(items);
-    if (selectedWorkerIdx >= workers.length) {
-      selectedWorkerIdx = Math.max(0, workers.length - 1);
+
+    if (workers.length > 0) {
+      if (selectedWorkerIdx >= workers.length) {
+        selectedWorkerIdx = Math.max(0, workers.length - 1);
+      }
+      workersList.select(selectedWorkerIdx);
     }
-    workersList.select(selectedWorkerIdx);
   }
 
   function elapsedStr(since: Date): string {
@@ -929,16 +944,30 @@ export async function dashboard(): Promise<void> {
         ? ` {cyan-fg}/ ${filterQuery.trim()}{/cyan-fg}`
         : '';
       pipelineContainer.setLabel(` Task Pipeline${hiddenLabel}${filterLabel} `);
-      if (treeLines.length === 0) {
-        const curFilter = filterQuery.trim();
-        const msg = curFilter.length > 0
-          ? `{grey-fg}No tasks match {bold}/${curFilter}{/bold} — press {bold}Esc{/bold} to clear{/grey-fg}`
-          : hiddenCount > 0
-            ? `{grey-fg}All tasks hidden — press {bold}h{/bold} to show completed/cancelled{/grey-fg}`
-            : '{grey-fg}No tasks{/grey-fg}';
-        pipelineBox.setItems([msg]);
-      } else {
-        pipelineBox.setItems(treeLines);
+      const newPipelineItems: string[] = treeLines.length === 0
+        ? [(() => {
+            const curFilter = filterQuery.trim();
+            return curFilter.length > 0
+              ? `{grey-fg}No tasks match {bold}/${curFilter}{/bold} — press {bold}Esc{/bold} to clear{/grey-fg}`
+              : hiddenCount > 0
+                ? `{grey-fg}All tasks hidden — press {bold}h{/bold} to show completed/cancelled{/grey-fg}`
+                : '{grey-fg}No tasks{/grey-fg}';
+          })()]
+        : treeLines;
+
+      const pipelineChanged = newPipelineItems.length !== prevPipelineItems.length ||
+        newPipelineItems.some((line, idx) => line !== prevPipelineItems[idx]);
+
+      if (pipelineChanged) {
+        // Save scroll position so we don't jump to top on every refresh
+        const prevSelected = (pipelineBox as unknown as Record<string, number>)['selected'] ?? 0;
+        const prevBase = (pipelineBox as unknown as Record<string, number>)['childBase'] ?? 0;
+        pipelineBox.setItems(newPipelineItems);
+        // Restore position, clamped to new list length
+        const maxIdx = Math.max(0, newPipelineItems.length - 1);
+        (pipelineBox as unknown as Record<string, number>)['childBase'] = Math.min(prevBase, maxIdx);
+        (pipelineBox as unknown as Record<string, number>)['selected'] = Math.min(prevSelected, maxIdx);
+        prevPipelineItems = newPipelineItems;
       }
 
       // Auto-select first worker's log if none selected
