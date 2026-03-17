@@ -1,0 +1,15 @@
+# only add shareable .claude artifacts
+.claude/**/*
+!.claude/agents
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/skills
+# do not ignore .claude directories in nested directories, since these are custom configs, skills, etc.
+!*/**/.claude
+
+.devcontainer/logs
+data/
+node_modules/
+packages/*/dist/
+packages/*/node_modules/
+**/*.tsbuildinfo

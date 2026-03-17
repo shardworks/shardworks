@@ -1,8 +1,2 @@
 .devcontainer/logs/
-data/
-node_modules/
-packages/*/dist/
-packages/*/node_modules/
-**/*.tsbuildinfo
-.claude/
 .pnpm-store

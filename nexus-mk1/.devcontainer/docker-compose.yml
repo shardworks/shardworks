@@ -1,5 +1,5 @@
 services:
-  shardworks:
+ shardworks:
     build:
       context: .
       dockerfile: Dockerfile
@@ -8,6 +8,9 @@ services:
         limits:
           cpus: "6"
           memory: 6g
+    depends_on:
+      dolt:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     hostname: devcontainer
@@ -17,6 +20,21 @@ services:
     shm_size: 1g
     volumes:
       - ..:/workspace:cached
+
+  dolt:
+    image: dolthub/dolt-sql-server:latest
+    environment:
+      DOLT_ROOT_HOST: '%'
+    healthcheck:
+      test: ["CMD-SHELL", "dolt sql -q 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - shardworks
+    volumes:
+      - dolt-data:/var/lib/dolt
 
 networks:
   shardworks:
