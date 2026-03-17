@@ -219,7 +219,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     style: { bg: 'blue', fg: 'white' },
     tags: true,
-    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh',
+    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}o{/bold} view logs | {bold}Space{/bold} collapse/expand | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh',
   });
   // statusBar content is managed by updateStatusBar() — initial content set above is overwritten on first render
 
@@ -534,7 +534,7 @@ export async function dashboard(): Promise<void> {
 
   function statusBarText(): string {
     if (focusedPanel === 'pipeline') {
-      return ' {bold}q{/bold} quit | {bold}Tab{/bold} switch panel | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} logs | {bold}h{/bold} toggle | {bold}/{/bold} search | {bold}R{/bold} refresh | {bold}r{/bold} retry(failed) | {bold}c{/bold} cancel | {bold}p{/bold} publish';
+      return ' {bold}q{/bold} quit | {bold}Tab{/bold} switch panel | {bold}Enter{/bold}/{bold}o{/bold} view logs | {bold}Space{/bold} collapse/expand | {bold}h{/bold} toggle | {bold}/{/bold} search | {bold}R{/bold} refresh | {bold}r{/bold} retry(failed) | {bold}c{/bold} cancel | {bold}p{/bold} publish';
     }
     return ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}/{/bold} search pipeline';
   }
@@ -1051,32 +1051,7 @@ export async function dashboard(): Promise<void> {
       await showLogOverlay('No worker selected', null);
       return;
     }
-
-    // Find the log file for this worker's task (same logic as tailWorkerLog)
-    const base = workLogsDir();
-    let logPath: string | null = null;
-    try {
-      const entries = await readdir(base);
-      const taskPrefix = worker.taskId + '.';
-      const exactName = worker.taskId + '.jsonl';
-      const matchingFiles = entries.filter(e =>
-        e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
-      );
-      if (matchingFiles.length > 0) {
-        let latestMtime = 0;
-        for (const f of matchingFiles) {
-          const p = join(base, f);
-          const s = await stat(p);
-          if (s.mtimeMs > latestMtime) {
-            latestMtime = s.mtimeMs;
-            logPath = p;
-          }
-        }
-      }
-    } catch {
-      // no logs dir — logPath stays null
-    }
-
+    const logPath = await findTaskLogPath(worker.taskId);
     const title = `${worker.agentId.slice(0, 8)} │ ${worker.taskId} │ ${worker.description.slice(0, 40)}`;
     await showLogOverlay(title, logPath);
   });
@@ -1108,8 +1083,8 @@ export async function dashboard(): Promise<void> {
     return match ? match[0] : null;
   }
 
-  // Enter / Space on Task Pipeline → toggle collapse/expand of the node's subtree
-  pipelineBox.key(['enter', 'space'], async () => {
+  // Space on Task Pipeline → toggle collapse/expand of the node's subtree
+  pipelineBox.key(['space'], async () => {
     const taskId = selectedPipelineTaskId();
     if (!taskId) return;
     if (collapsedIds.has(taskId)) {
@@ -1120,14 +1095,9 @@ export async function dashboard(): Promise<void> {
     await refresh();
   });
 
-  // 'o' on Task Pipeline → open full-screen log overlay for the selected task
-  pipelineBox.key(['o'], async () => {
-    const taskId = selectedPipelineTaskId();
-    if (!taskId) return;
-
-    // Find the log file for this task (flat layout: data/work-logs/<task-id>.jsonl)
+  /** Find the most-recently-modified log file for a task ID. Returns null if none found. */
+  async function findTaskLogPath(taskId: string): Promise<string | null> {
     const base = workLogsDir();
-    let logPath: string | null = null;
     try {
       const entries = await readdir(base);
       const taskPrefix = taskId + '.';
@@ -1135,22 +1105,38 @@ export async function dashboard(): Promise<void> {
       const matchingFiles = entries.filter(e =>
         e === exactName || (e.startsWith(taskPrefix) && e.endsWith('.jsonl')),
       );
-      if (matchingFiles.length > 0) {
-        let latestMtime = 0;
-        for (const f of matchingFiles) {
-          const p = join(base, f);
-          const s = await stat(p);
-          if (s.mtimeMs > latestMtime) {
-            latestMtime = s.mtimeMs;
-            logPath = p;
-          }
+      if (matchingFiles.length === 0) return null;
+      let latestMtime = 0;
+      let latestPath: string | null = null;
+      for (const f of matchingFiles) {
+        const p = join(base, f);
+        const s = await stat(p);
+        if (s.mtimeMs > latestMtime) {
+          latestMtime = s.mtimeMs;
+          latestPath = p;
         }
       }
+      return latestPath;
     } catch {
-      // no logs dir — logPath stays null
+      return null;
     }
+  }
 
-    const title = `Task ${taskId}`;
+  // Enter on Task Pipeline → open full-screen log overlay for the selected task
+  pipelineBox.key(['enter'], async () => {
+    const task = getSelectedPipelineTask();
+    if (!task) return;
+    const logPath = await findTaskLogPath(task.taskId);
+    const title = `Task ${task.taskId}`;
+    await showLogOverlay(title, logPath);
+  });
+
+  // 'o' on Task Pipeline → same as Enter: open full-screen log overlay
+  pipelineBox.key(['o'], async () => {
+    const task = getSelectedPipelineTask();
+    if (!task) return;
+    const logPath = await findTaskLogPath(task.taskId);
+    const title = `Task ${task.taskId}`;
     await showLogOverlay(title, logPath);
   });
 
