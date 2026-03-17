@@ -68,6 +68,10 @@ const MIGRATIONS: Array<{ id: string; sql: string }> = [
     id: '005_add_result_summary',
     sql: `ALTER TABLE tasks ADD COLUMN result_summary JSON NULL AFTER result_payload`,
   },
+  {
+    id: '006_bump_max_attempts_default',
+    sql: `ALTER TABLE tasks ALTER COLUMN max_attempts SET DEFAULT 3`,
+  },
 ];
 
 export async function initSchema(): Promise<void> {
