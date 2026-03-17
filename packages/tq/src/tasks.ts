@@ -1814,6 +1814,82 @@ export async function diff(fromCommit: string, toCommit: string): Promise<TaskDi
 }
 
 // ---------------------------------------------------------------------------
+// compact
+// ---------------------------------------------------------------------------
+
+export interface CompactResult {
+  compacted: string[];
+  skipped: string[];
+}
+
+/**
+ * Compact one or more completed tasks: write result_summary, null out result_payload.
+ *
+ * @param taskId   - The root task to compact.
+ * @param summary  - Caller-provided summary value (stored as result_summary).
+ * @param actor    - Agent/user performing the operation.
+ * @param subtree  - When true, also compact all completed descendants.
+ */
+export async function compact(
+  taskId: string,
+  summary: unknown,
+  actor: string,
+  subtreeMode = false,
+): Promise<CompactResult> {
+  return withCommit(`[compact] ${taskId} by ${actor}`, async conn => {
+    // Gather all target task IDs
+    const targetIds: string[] = [taskId];
+
+    if (subtreeMode) {
+      const [descRows] = await conn.execute<RowDataPacket[]>(
+        `WITH RECURSIVE sub AS (
+           SELECT id, parent_id FROM tasks WHERE id = ?
+           UNION ALL
+           SELECT t.id, t.parent_id FROM tasks t JOIN sub s ON t.parent_id = s.id
+         )
+         SELECT id FROM sub WHERE id != ?`,
+        [taskId, taskId],
+      );
+      for (const r of descRows) targetIds.push(r.id as string);
+    }
+
+    // Lock all rows
+    const placeholders = targetIds.map(() => '?').join(',');
+    const [rows] = await conn.execute<TaskRow[]>(
+      `SELECT * FROM tasks WHERE id IN (${placeholders}) FOR UPDATE`,
+      targetIds,
+    );
+
+    // Validate root task exists
+    const rootRow = rows.find(r => r.id === taskId);
+    if (!rootRow) throw new Error(`Task not found: ${taskId}`);
+
+    const compacted: string[] = [];
+    const skipped: string[] = [];
+    const summaryJson = JSON.stringify(summary);
+
+    for (const row of rows) {
+      if (row.status !== 'completed') {
+        skipped.push(row.id);
+        continue;
+      }
+      await conn.execute(
+        `UPDATE tasks SET result_summary = ?, result_payload = NULL WHERE id = ?`,
+        [summaryJson, row.id],
+      );
+      compacted.push(row.id);
+    }
+
+    // If root wasn't completed (and thus skipped), treat as error unless subtree mode
+    if (!subtreeMode && skipped.includes(taskId)) {
+      throw new Error(`Task ${taskId} is not completed (status: ${rootRow.status})`);
+    }
+
+    return { compacted, skipped };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
 
