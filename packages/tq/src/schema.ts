@@ -1,3 +1,4 @@
+import mysql from 'mysql2/promise';
 import { pool } from './db.js';
 
 const STATEMENTS = [
@@ -35,33 +36,62 @@ const STATEMENTS = [
     tag     VARCHAR(64) NOT NULL,
     PRIMARY KEY (task_id, tag)
   )`,
+  `CREATE TABLE IF NOT EXISTS schema_migrations (
+    id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+    applied_at DATETIME(3)  NOT NULL
+  )`,
 ];
 
-/** Migrations that may fail if already applied (e.g. column already exists). */
-const MIGRATIONS = [
-  `ALTER TABLE tasks ADD COLUMN assigned_role VARCHAR(64) AFTER claimed_by`,
-  `ALTER TABLE tasks ADD COLUMN max_attempts INT NOT NULL DEFAULT 1 AFTER assigned_role`,
-  `ALTER TABLE tasks ADD COLUMN attempt_count INT NOT NULL DEFAULT 0 AFTER max_attempts`,
-  `ALTER TABLE tasks ADD COLUMN timeout_seconds INT NULL AFTER attempt_count`,
-  `ALTER TABLE tasks ADD COLUMN result_summary JSON NULL AFTER result_payload`,
+/**
+ * Versioned migrations. Each entry has a stable string ID and a SQL statement.
+ * Migrations are only executed if their ID is not already recorded in the
+ * schema_migrations table, so each migration runs exactly once.
+ */
+const MIGRATIONS: Array<{ id: string; sql: string }> = [
+  {
+    id: '001_add_assigned_role',
+    sql: `ALTER TABLE tasks ADD COLUMN assigned_role VARCHAR(64) AFTER claimed_by`,
+  },
+  {
+    id: '002_add_max_attempts',
+    sql: `ALTER TABLE tasks ADD COLUMN max_attempts INT NOT NULL DEFAULT 1 AFTER assigned_role`,
+  },
+  {
+    id: '003_add_attempt_count',
+    sql: `ALTER TABLE tasks ADD COLUMN attempt_count INT NOT NULL DEFAULT 0 AFTER max_attempts`,
+  },
+  {
+    id: '004_add_timeout_seconds',
+    sql: `ALTER TABLE tasks ADD COLUMN timeout_seconds INT NULL AFTER attempt_count`,
+  },
+  {
+    id: '005_add_result_summary',
+    sql: `ALTER TABLE tasks ADD COLUMN result_summary JSON NULL AFTER result_payload`,
+  },
 ];
 
 export async function initSchema(): Promise<void> {
   const conn = await pool.getConnection();
   try {
+    // Ensure base tables (including schema_migrations) exist.
     for (const sql of STATEMENTS) {
       await conn.execute(sql);
     }
-    for (const sql of MIGRATIONS) {
-      try {
-        await conn.execute(sql);
-      } catch (err: unknown) {
-        // Ignore "already exists" errors — column already exists from a prior migration
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.toLowerCase().includes('already exists')) {
-          throw err;
-        }
-      }
+
+    // Fetch already-applied migration IDs.
+    const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+      'SELECT id FROM schema_migrations',
+    );
+    const applied = new Set(rows.map((r) => String(r.id)));
+
+    // Run only unapplied migrations.
+    for (const { id, sql } of MIGRATIONS) {
+      if (applied.has(id)) continue;
+      await conn.execute(sql);
+      await conn.execute(
+        'INSERT INTO schema_migrations (id, applied_at) VALUES (?, NOW(3))',
+        [id],
+      );
     }
   } finally {
     conn.release();
