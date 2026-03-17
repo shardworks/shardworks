@@ -35,6 +35,7 @@ import {
   history,
   diff,
   compact,
+  branchMerge,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -565,6 +566,26 @@ program
       process.exit(1);
     }
     await run(() => compact(id, parsed, opts.agent, opts.subtree ?? false));
+  });
+
+// ── tq branch ────────────────────────────────────────────────────────────────
+
+const branchCmd = program
+  .command('branch')
+  .description('Dolt branch management commands');
+
+// tq branch merge <source> --into <target>
+branchCmd
+  .command('merge <source>')
+  .description(
+    'Merge <source> branch into a target branch.\n' +
+    'Checks out the target branch, then calls dolt_merge(source).\n' +
+    'Conflicts are returned as {conflicts: [...]} rather than thrown.\n' +
+    'Returns {source, target, fast_forward, conflicts}.',
+  )
+  .requiredOption('--into <branch>', 'Target branch to merge into')
+  .action(async (source: string, opts: { into: string }) => {
+    await run(() => branchMerge(source, opts.into), { skipSchema: true });
   });
 
 program.parse();

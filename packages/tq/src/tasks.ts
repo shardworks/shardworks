@@ -1890,6 +1890,111 @@ export async function compact(
 }
 
 // ---------------------------------------------------------------------------
+// branch operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a Dolt branch name: alphanumerics, dots, dashes, underscores,
+ * forward slashes. Rejects anything that could form a SQL injection.
+ */
+function validateBranchName(name: string): string {
+  if (!/^[a-zA-Z0-9._\-/]+$/.test(name)) {
+    throw new Error(`Invalid branch name: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
+export interface BranchConflict {
+  table: string;
+  num_conflicts: number;
+}
+
+export interface BranchMergeResult {
+  source: string;
+  target: string;
+  fast_forward: boolean;
+  conflicts: BranchConflict[];
+}
+
+interface MergeRow extends RowDataPacket {
+  fast_forward: number | null;
+  conflicts: number | null;
+  message?: string | null;
+}
+
+interface ConflictRow extends RowDataPacket {
+  table_name: string;
+  num_conflicts: number;
+}
+
+/**
+ * Merge `source` branch into `target` branch.
+ *
+ * Steps:
+ *  1. CALL dolt_checkout(target)
+ *  2. CALL dolt_merge(source)
+ *  3. If there are conflicts, query dolt_conflicts to surface them
+ *     and return {conflicts: [...]} without throwing.
+ *
+ * Returns a BranchMergeResult with fast_forward flag and conflicts list.
+ * A successful no-conflict merge returns conflicts: [].
+ */
+export async function branchMerge(source: string, target: string): Promise<BranchMergeResult> {
+  const safeSrc = validateBranchName(source);
+  const safeTgt = validateBranchName(target);
+  const conn = await pool.getConnection();
+  try {
+    // Switch to target branch
+    await conn.execute('CALL dolt_checkout(?)', [safeTgt]);
+
+    // Attempt merge — dolt_merge returns a result set even on conflict
+    let fastForward = false;
+    let mergeConflicts = 0;
+    try {
+      const [results] = await conn.execute<MergeRow[]>(
+        'CALL dolt_merge(?)',
+        [safeSrc],
+      );
+      const row = Array.isArray(results) ? results[0] : null;
+      if (row) {
+        fastForward = Boolean(row.fast_forward);
+        mergeConflicts = typeof row.conflicts === 'number' ? row.conflicts : 0;
+      }
+    } catch (err) {
+      // dolt_merge may throw when there are conflicts; treat as conflicted merge
+      const message = err instanceof Error ? err.message : String(err);
+      // Re-throw if it's not a merge conflict error
+      if (!/conflict/i.test(message) && !/merge/i.test(message)) {
+        throw err;
+      }
+      mergeConflicts = 1; // will query actual counts below
+    }
+
+    // If conflicts reported, query dolt_conflicts for details
+    const conflicts: BranchConflict[] = [];
+    if (mergeConflicts > 0) {
+      const [conflictRows] = await conn.execute<ConflictRow[]>(
+        `SELECT table_name, COUNT(*) AS num_conflicts
+           FROM dolt_conflicts
+          GROUP BY table_name`,
+      );
+      for (const r of conflictRows) {
+        conflicts.push({ table: r.table_name, num_conflicts: Number(r.num_conflicts) });
+      }
+    }
+
+    return {
+      source: safeSrc,
+      target: safeTgt,
+      fast_forward: fastForward,
+      conflicts,
+    };
+  } finally {
+    conn.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
 
