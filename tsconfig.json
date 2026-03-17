@@ -13,6 +13,7 @@
   },
   "references": [
     { "path": "packages/shared-types" },
+    { "path": "packages/db" },
     { "path": "packages/tq" },
     { "path": "packages/work" },
     { "path": "packages/worker" },
