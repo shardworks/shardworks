@@ -106,8 +106,7 @@ export class DefaultScheduler implements Scheduler {
         if (operationalSignals.length > 0) {
           const rateLimited = await processSignals(cfg, state, log, operationalSignals);
           if (rateLimited) {
-            log('warn', 'Rate limit signal received — shutting down');
-            await shutdown('rate_limited');
+            log('warn', 'Rate limit signal received — pausing spawning until hold-off expires');
             return;
           }
         }
