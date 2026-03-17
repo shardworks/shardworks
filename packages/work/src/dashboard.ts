@@ -166,7 +166,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     tags: true,
     padding: { left: 1, right: 1 },
-    content: `{grey-fg}Legend:{/grey-fg} {green-fg}✓{/green-fg} done  {yellow-fg}▶{/yellow-fg} running  {cyan-fg}○{/cyan-fg} eligible  {grey-fg}…{/grey-fg} pending  {red-fg}✗{/red-fg} failed  {grey-fg}□{/grey-fg} draft`,
+    content: `{grey-fg}Legend:{/grey-fg} {green-fg}✓{/green-fg} done  {green-fg}▶{/green-fg} running  {cyan-fg}○{/cyan-fg} eligible  {grey-fg}…{/grey-fg} pending  {#FF8C00-fg}✗{/#FF8C00-fg} failed  {grey-fg}□{/grey-fg} draft  {grey-fg}⊘{/grey-fg} cancelled  {#FF8C00-fg}⊗{/#FF8C00-fg} blocked`,
   });
 
   // ── Pipeline list (scrollable task tree, below the legend) ─────────────
@@ -424,11 +424,18 @@ export async function dashboard(): Promise<void> {
 
         const statusIcon = statusSymbol(node.status, node.assigned_role);
 
+        // ── Abbreviated ID for nested tasks ───────────────────────────────
+        // Root tasks show full ID; children show only the suffix after the
+        // parent's ID prefix (e.g. parent tq-abc123, child tq-abc123.def4 → .def4)
+        const displayId = indent > 0 && node.parent_id && node.id.startsWith(node.parent_id)
+          ? node.id.slice(node.parent_id.length)
+          : node.id;
+
         // ── Dynamic description width ─────────────────────────────────────
         // panel_width = 67% of terminal width (right column)
         // subtract: border(2) + padding(2) + prefix + icon(1) + space(1) + id + space(1)
         const panelWidth = Math.floor((screen.width as number) * 0.67);
-        const idLen = node.id.length;
+        const idLen = displayId.length;
         const availForDesc = panelWidth - 2 - 2 - prefixLen - 1 - 1 - idLen - 1;
         const maxDesc = Math.max(availForDesc, 0);
 
@@ -453,7 +460,7 @@ export async function dashboard(): Promise<void> {
         const colorOpen = `{${lineColor}-fg}`;
         const colorClose = `{/${lineColor}-fg}`;
 
-        lines.push(`${colorOpen}${prefix}${collapseIndicator}${statusIcon} ${node.id} ${desc}${colorClose}${countSuffix}`);
+        lines.push(`${colorOpen}${prefix}${collapseIndicator}${statusIcon} ${displayId} ${desc}${colorClose}${countSuffix}`);
         meta.push({ taskId: node.id, status: node.status, claimedBy: node.claimed_by ?? null });
 
         // ── Recurse into children (skip when collapsed) ───────────────────
@@ -507,6 +514,8 @@ export async function dashboard(): Promise<void> {
       case 'pending':     return '{grey-fg}…{/grey-fg}';
       case 'failed':      return '{#FF8C00-fg}✗{/#FF8C00-fg}';
       case 'draft':       return '{grey-fg}□{/grey-fg}';
+      case 'cancelled':   return '{grey-fg}⊘{/grey-fg}';
+      case 'blocked':     return '{#FF8C00-fg}⊗{/#FF8C00-fg}';
       default:            return '{white-fg}?{/white-fg}';
     }
   }
@@ -1069,18 +1078,10 @@ export async function dashboard(): Promise<void> {
     }, 10);
   });
 
-  /** Extract the task ID from the currently selected pipeline line. */
+  /** Return the full task ID for the currently selected pipeline row, or null. */
   function selectedPipelineTaskId(): string | null {
     const idx = (pipelineBox as unknown as { selected: number }).selected ?? 0;
-    const items = (pipelineBox as unknown as { items: Array<{ getText?: () => string; content?: string }> }).items;
-    const rawItem = items[idx];
-    const rawText: string = typeof rawItem?.getText === 'function'
-      ? rawItem.getText()
-      : (rawItem?.content ?? String(rawItem ?? ''));
-    // Strip blessed markup tags to get plain text, then extract task ID
-    const plain = rawText.replace(/\{[^}]+\}/g, '');
-    const match = plain.match(/tq-[a-f0-9]+(?:\.[a-f0-9]+)*/i);
-    return match ? match[0] : null;
+    return pipelineTaskMeta[idx]?.taskId ?? null;
   }
 
   // Space on Task Pipeline → toggle collapse/expand of the node's subtree
