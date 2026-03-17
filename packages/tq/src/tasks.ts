@@ -46,11 +46,12 @@ function parseJson(val: unknown): unknown {
   return val ?? null;
 }
 
-async function attachDeps(conn: PoolConnection, taskIds: string[]): Promise<Map<string, string[]>> {
+async function attachDeps(conn: PoolConnection, taskIds: string[], asOf?: string): Promise<Map<string, string[]>> {
   if (taskIds.length === 0) return new Map();
   const placeholders = taskIds.map(() => '?').join(',');
+  const asOfClause = asOf ? ` AS OF '${asOf}'` : '';
   const [rows] = await conn.execute<RowDataPacket[]>(
-    `SELECT task_id, dep_id FROM task_dependencies WHERE task_id IN (${placeholders})`,
+    `SELECT task_id, dep_id FROM task_dependencies${asOfClause} WHERE task_id IN (${placeholders})`,
     taskIds,
   );
   const map = new Map<string, string[]>(taskIds.map(id => [id, []]));
@@ -246,12 +247,13 @@ export async function getMaxPriority(): Promise<number> {
   }
 }
 
-export async function getTask(id: string, fullResult = false): Promise<Task | null> {
+export async function getTask(id: string, fullResult = false, branch?: string): Promise<Task | null> {
   const conn = await pool.getConnection();
   try {
-    const [rows] = await conn.execute<TaskRow[]>('SELECT * FROM tasks WHERE id = ?', [id]);
+    const asOfClause = branch ? ` AS OF '${branch}'` : '';
+    const [rows] = await conn.execute<TaskRow[]>(`SELECT * FROM tasks${asOfClause} WHERE id = ?`, [id]);
     if (rows.length === 0) return null;
-    const depsMap = await attachDeps(conn, [id]);
+    const depsMap = await attachDeps(conn, [id], branch);
     const task = rowToTask(rows[0]!, depsMap.get(id) ?? []);
     // When fullResult is false (default), omit result_payload if result_summary is present.
     // This keeps the default output compact after compaction while --full-result
@@ -272,7 +274,7 @@ export interface ListFilters {
   assigned_role?: string | null;
 }
 
-export async function listTasks(filters: ListFilters = {}): Promise<Task[]> {
+export async function listTasks(filters: ListFilters = {}, branch?: string): Promise<Task[]> {
   const conn = await pool.getConnection();
   try {
     const conditions: string[] = [];
@@ -295,14 +297,15 @@ export async function listTasks(filters: ListFilters = {}): Promise<Task[]> {
       }
     }
 
+    const asOfClause = branch ? ` AS OF '${branch}'` : '';
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks ${where} ORDER BY priority DESC, created_at ASC`,
+      `SELECT * FROM tasks${asOfClause} ${where} ORDER BY priority DESC, created_at ASC`,
       params,
     );
 
     const ids = rows.map(r => r.id);
-    const depsMap = await attachDeps(conn, ids);
+    const depsMap = await attachDeps(conn, ids, branch);
     return rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
   } finally {
     conn.release();
@@ -635,7 +638,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 // T09 — Claim (no tag routing for MVP)
 // ---------------------------------------------------------------------------
 
-export async function claim(agentId: string, capabilities: string[] = [], draft = false, role?: string): Promise<ClaimResult> {
+export async function claim(agentId: string, capabilities: string[] = [], draft = false, role?: string, branch?: string): Promise<ClaimResult> {
   const targetStatus = draft ? 'draft' : 'eligible';
   const orderBy = draft
     ? 'priority DESC, created_at ASC'
@@ -699,7 +702,7 @@ export async function claim(agentId: string, capabilities: string[] = [], draft 
     return {
       task: rowToTask({ ...targetRow, status: 'in_progress', claimed_by: agentId, claimed_at: now }, depsMap.get(targetRow.id) ?? []),
     };
-  });
+  }, branch);
 }
 
 // ---------------------------------------------------------------------------
@@ -1459,14 +1462,15 @@ export async function subtree(parentId: string): Promise<SubtreeResult> {
   }
 }
 
-export async function ready(): Promise<Task[]> {
+export async function ready(branch?: string): Promise<Task[]> {
   const conn = await pool.getConnection();
   try {
+    const asOfClause = branch ? ` AS OF '${branch}'` : '';
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
+      `SELECT * FROM tasks${asOfClause} WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
     );
     const ids = rows.map(r => r.id);
-    const depsMap = await attachDeps(conn, ids);
+    const depsMap = await attachDeps(conn, ids, branch);
     return rows.map(r => rowToTask(r, depsMap.get(r.id) ?? []));
   } finally {
     conn.release();

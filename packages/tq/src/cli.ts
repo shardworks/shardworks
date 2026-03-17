@@ -183,8 +183,9 @@ program
   .option('--draft', 'Claim a draft task instead of an eligible one (for task-refiner agents)')
   .option('--role <role>', 'Only claim tasks with this exact assigned_role (no fallback to unassigned tasks). Omit to claim only unassigned (NULL) tasks.')
   .option('--capability <tag>', 'Capability tag this agent supports (repeatable). Only tasks whose required tags are a subset of the provided capabilities will be claimed. Omit to claim any task regardless of tags.', collect, [] as string[])
-  .action(async (opts: { agent: string; draft?: boolean; role?: string; capability: string[] }) => {
-    await run(() => claim(opts.agent, opts.capability, opts.draft ?? false, opts.role));
+  .option('--branch <name>', 'Dolt branch to claim from (default: main)')
+  .action(async (opts: { agent: string; draft?: boolean; role?: string; capability: string[]; branch?: string }) => {
+    await run(() => claim(opts.agent, opts.capability, opts.draft ?? false, opts.role, opts.branch));
   });
 
 // ── tq claim-id ─────────────────────────────────────────────────────────────
@@ -404,7 +405,8 @@ program
   .option('--parent <id>', 'Filter by parent ID (pass empty string for root tasks)')
   .option('--created-by <id>', 'Filter by creator')
   .option('--assigned-role <role>', 'Filter by assigned role (use "none" for unassigned tasks)')
-  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string }) => {
+  .option('--branch <name>', 'Dolt branch to query (default: main)')
+  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string; branch?: string }) => {
     await run(async () => {
       const filters: ListFilters = {};
       if (opts.status)  filters.status     = opts.status as TaskStatus;
@@ -413,7 +415,7 @@ program
       if (opts.assignedRole !== undefined) {
         filters.assigned_role = opts.assignedRole === 'none' ? null : opts.assignedRole;
       }
-      return listTasks(filters);
+      return listTasks(filters, opts.branch);
     }, { skipSchema: true });
   });
 
@@ -436,9 +438,10 @@ program
   .command('show <id>')
   .description('Show a single task')
   .option('--full-result', 'Always include result_payload even when result_summary is present')
-  .action(async (id: string, opts: { fullResult?: boolean }) => {
+  .option('--branch <name>', 'Dolt branch to query (default: main)')
+  .action(async (id: string, opts: { fullResult?: boolean; branch?: string }) => {
     await run(async () => {
-      const task = await getTask(id, opts.fullResult ?? false);
+      const task = await getTask(id, opts.fullResult ?? false, opts.branch);
       if (!task) throw new Error(`Task not found: ${id}`);
       return task;
     }, { skipSchema: true });
@@ -449,8 +452,9 @@ program
 program
   .command('ready')
   .description('List all currently claimable tasks, highest priority first')
-  .action(async () => {
-    await run(() => ready(), { skipSchema: true });
+  .option('--branch <name>', 'Dolt branch to query (default: main)')
+  .action(async (opts: { branch?: string }) => {
+    await run(() => ready(opts.branch), { skipSchema: true });
   });
 
 // ── tq subtree ──────────────────────────────────────────────────────────────

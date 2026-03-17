@@ -42,6 +42,10 @@ export async function withTransaction<T>(
  * Acquire a connection, run `fn` in a transaction, then create a Dolt
  * version commit with the given message.
  *
+ * When `branch` is provided, the connection is checked out to that branch
+ * before the transaction runs and restored to `main` after the Dolt commit
+ * (or on error) so the connection is safe to return to the pool.
+ *
  * ⚠️  KNOWN LIMITATION — NON-ATOMIC VERSIONING
  * The MySQL transaction commit (line ~49) and the Dolt commit (lines ~50-62)
  * are two separate, non-atomic operations. This means:
@@ -67,9 +71,13 @@ export async function withTransaction<T>(
 export async function withCommit<T>(
   commitMessage: string,
   fn: (conn: PoolConnection) => Promise<T>,
+  branch?: string,
 ): Promise<T> {
   const conn = await pool.getConnection();
   try {
+    if (branch) {
+      await conn.execute('CALL dolt_checkout(?)', [branch]);
+    }
     const result = await withTransaction(conn, fn);
     try {
       // Guard: only commit if there are actual changes in the working set.
@@ -90,6 +98,11 @@ export async function withCommit<T>(
     }
     return result;
   } finally {
+    // Always restore to main before returning the connection to the pool,
+    // so subsequent callers don't inherit a non-main branch.
+    if (branch) {
+      await conn.execute('CALL dolt_checkout(?)', ['main']).catch(() => undefined);
+    }
     conn.release();
   }
 }
