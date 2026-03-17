@@ -83,7 +83,17 @@ export function configFromParsedOpts(): WorkerConfig {
   const workDir            = process.env['WORK_DIR']             ?? process.cwd();
   const claudeModel        = process.env['CLAUDE_MODEL']         ?? 'sonnet';
   const rawBudget          = process.env['CLAUDE_MAX_BUDGET_USD'];
-  const claudeMaxBudgetUsd = rawBudget !== undefined ? parseFloat(rawBudget) : undefined;
+  let claudeMaxBudgetUsd: number | undefined;
+  if (rawBudget !== undefined) {
+    const parsed = parseFloat(rawBudget);
+    if (isNaN(parsed)) {
+      throw new Error(`CLAUDE_MAX_BUDGET_USD must be a valid number, got: "${rawBudget}"`);
+    }
+    if (parsed <= 0) {
+      throw new Error(`CLAUDE_MAX_BUDGET_USD must be a positive number, got: ${parsed}`);
+    }
+    claudeMaxBudgetUsd = parsed;
+  }
 
   // Agent ID is always ephemeral — generated fresh every invocation.
   const agentId = randomUUID();
