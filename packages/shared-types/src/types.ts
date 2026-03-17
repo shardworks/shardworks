@@ -1,3 +1,31 @@
+/**
+ * Shape of a raw `tasks` table row as returned by mysql2.
+ * Both the `tq` and `work` packages extend this with `RowDataPacket` locally so
+ * that a single authoritative definition prevents schema-drift between the two.
+ *
+ * Rule: any column added to the `tasks` table must also be added here.
+ */
+export interface TaskDbRow {
+  id: string;
+  description: string;
+  payload: unknown;
+  status: string;
+  parent_id: string | null;
+  priority: number;
+  result_payload: unknown;
+  result_summary: unknown;
+  created_by: string;
+  claimed_by: string | null;
+  assigned_role: string | null;
+  max_attempts: number;
+  attempt_count: number;
+  timeout_seconds: number | null;
+  created_at: Date;
+  eligible_at: Date | null;
+  claimed_at: Date | null;
+  completed_at: Date | null;
+}
+
 /** A JSON-serializable value. */
 export type JsonValue =
   | string
