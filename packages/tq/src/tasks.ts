@@ -287,6 +287,7 @@ export interface ListFilters {
   parent_id?: string;
   created_by?: string;
   assigned_role?: string | null;
+  tag?: string;
 }
 
 export async function listTasks(filters: ListFilters = {}, branch?: string, brief?: boolean): Promise<Task[] | BriefTask[]> {
@@ -295,36 +296,41 @@ export async function listTasks(filters: ListFilters = {}, branch?: string, brie
     const conditions: string[] = [];
     const params: (string | number | null)[] = [];
 
-    if (filters.status) { conditions.push('status = ?'); params.push(filters.status); }
+    if (filters.status) { conditions.push('t.status = ?'); params.push(filters.status); }
     if (filters.parent_id !== undefined) {
       if (filters.parent_id === '') {
-        conditions.push('parent_id IS NULL');
+        conditions.push('t.parent_id IS NULL');
       } else {
-        conditions.push('parent_id = ?'); params.push(filters.parent_id);
+        conditions.push('t.parent_id = ?'); params.push(filters.parent_id);
       }
     }
-    if (filters.created_by) { conditions.push('created_by = ?'); params.push(filters.created_by); }
+    if (filters.created_by) { conditions.push('t.created_by = ?'); params.push(filters.created_by); }
     if (filters.assigned_role !== undefined) {
       if (filters.assigned_role === null) {
-        conditions.push('assigned_role IS NULL');
+        conditions.push('t.assigned_role IS NULL');
       } else {
-        conditions.push('assigned_role = ?'); params.push(filters.assigned_role);
+        conditions.push('t.assigned_role = ?'); params.push(filters.assigned_role);
       }
     }
 
     const asOfClause = branch ? ` AS OF '${branch}'` : '';
+    const tagJoin = filters.tag
+      ? ` INNER JOIN task_tags${asOfClause} tt ON tt.task_id = t.id AND tt.tag = ?`
+      : '';
+    if (filters.tag) params.push(filters.tag);
+
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     if (brief) {
       const [rows] = await conn.execute<RowDataPacket[]>(
-        `SELECT id, description, status, priority, assigned_role, parent_id, claimed_by FROM tasks${asOfClause} ${where} ORDER BY priority DESC, created_at ASC`,
+        `SELECT t.id, t.description, t.status, t.priority, t.assigned_role, t.parent_id, t.claimed_by FROM tasks${asOfClause} t${tagJoin} ${where} ORDER BY t.priority DESC, t.created_at ASC`,
         params,
       );
       return rows.map(r => rowToBriefTask(r));
     }
 
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks${asOfClause} ${where} ORDER BY priority DESC, created_at ASC`,
+      `SELECT t.* FROM tasks${asOfClause} t${tagJoin} ${where} ORDER BY t.priority DESC, t.created_at ASC`,
       params,
     );
 
@@ -1515,20 +1521,26 @@ export async function subtree(parentId: string, brief?: boolean): Promise<Subtre
   }
 }
 
-export async function ready(branch?: string, brief?: boolean): Promise<Task[] | BriefTask[]> {
+export async function ready(branch?: string, brief?: boolean, tag?: string): Promise<Task[] | BriefTask[]> {
   const conn = await pool.getConnection();
   try {
     const asOfClause = branch ? ` AS OF '${branch}'` : '';
+    const tagJoin = tag
+      ? ` INNER JOIN task_tags${asOfClause} tt ON tt.task_id = t.id AND tt.tag = ?`
+      : '';
+    const tagParams: string[] = tag ? [tag] : [];
 
     if (brief) {
       const [rows] = await conn.execute<RowDataPacket[]>(
-        `SELECT id, description, status, priority, assigned_role, parent_id, claimed_by FROM tasks${asOfClause} WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
+        `SELECT t.id, t.description, t.status, t.priority, t.assigned_role, t.parent_id, t.claimed_by FROM tasks${asOfClause} t${tagJoin} WHERE t.status = 'eligible' ORDER BY t.priority DESC, t.eligible_at ASC`,
+        tagParams,
       );
       return rows.map(r => rowToBriefTask(r));
     }
 
     const [rows] = await conn.execute<TaskRow[]>(
-      `SELECT * FROM tasks${asOfClause} WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
+      `SELECT t.* FROM tasks${asOfClause} t${tagJoin} WHERE t.status = 'eligible' ORDER BY t.priority DESC, t.eligible_at ASC`,
+      tagParams,
     );
     const ids = rows.map(r => r.id);
     const depsMap = await attachDeps(conn, ids, branch);

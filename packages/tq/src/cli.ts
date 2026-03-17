@@ -406,9 +406,10 @@ program
   .option('--parent <id>', 'Filter by parent ID (pass empty string for root tasks)')
   .option('--created-by <id>', 'Filter by creator')
   .option('--assigned-role <role>', 'Filter by assigned role (use "none" for unassigned tasks)')
+  .option('--tag <tag>', 'Filter to tasks that have this tag')
   .option('--branch <name>', 'Dolt branch to query (default: main)')
   .option('--brief', 'Return only id, description, status, priority, assigned_role, parent_id, claimed_by (omits payload/result fields)')
-  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string; branch?: string; brief?: boolean }) => {
+  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string; tag?: string; branch?: string; brief?: boolean }) => {
     await run(async () => {
       const filters: ListFilters = {};
       if (opts.status)  filters.status     = opts.status as TaskStatus;
@@ -417,6 +418,7 @@ program
       if (opts.assignedRole !== undefined) {
         filters.assigned_role = opts.assignedRole === 'none' ? null : opts.assignedRole;
       }
+      if (opts.tag) filters.tag = opts.tag;
       return listTasks(filters, opts.branch, opts.brief);
     }, { skipSchema: true });
   });
@@ -456,8 +458,9 @@ program
   .description('List all currently claimable tasks, highest priority first')
   .option('--branch <name>', 'Dolt branch to query (default: main)')
   .option('--brief', 'Return only id, description, status, priority, assigned_role, parent_id, claimed_by (omits payload/result fields)')
-  .action(async (opts: { branch?: string; brief?: boolean }) => {
-    await run(() => ready(opts.branch, opts.brief), { skipSchema: true });
+  .option('--tag <tag>', 'Filter to tasks that have this tag')
+  .action(async (opts: { branch?: string; brief?: boolean; tag?: string }) => {
+    await run(() => ready(opts.branch, opts.brief, opts.tag), { skipSchema: true });
   });
 
 // ── tq subtree ──────────────────────────────────────────────────────────────
