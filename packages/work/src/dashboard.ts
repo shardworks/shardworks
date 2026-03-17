@@ -219,7 +219,7 @@ export async function dashboard(): Promise<void> {
     height: 1,
     style: { bg: 'blue', fg: 'white' },
     tags: true,
-    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} hide completed',
+    content: ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh',
   });
   // statusBar content is managed by updateStatusBar() — initial content set above is overwritten on first render
 
@@ -232,7 +232,7 @@ export async function dashboard(): Promise<void> {
   let currentLogPath: string | null = null;
   let currentLogOffset = 0;
   let focusedPanel: 'workers' | 'pipeline' = 'workers';
-  let hideCompletedSubtrees = true;
+  let hideTerminalTasks = true;
   const collapsedIds = new Set<string>();
   let filterQuery = '';
   let filterActive = false;
@@ -474,7 +474,7 @@ export async function dashboard(): Promise<void> {
       const roots = (children.get(null) ?? []).sort((a, b) => b.priority - a.priority);
       let hiddenCount = 0;
       for (const root of roots) {
-        if (hideCompletedSubtrees && isSubtreeCompleted(root.id)) {
+        if (hideTerminalTasks && (isSubtreeCompleted(root.id) || root.status === 'cancelled')) {
           hiddenCount++;
           continue;
         }
@@ -536,7 +536,7 @@ export async function dashboard(): Promise<void> {
     if (focusedPanel === 'pipeline') {
       return ' {bold}q{/bold} quit | {bold}Tab{/bold} switch panel | {bold}Enter{/bold}/{bold}Space{/bold} collapse/expand | {bold}o{/bold} logs | {bold}h{/bold} toggle | {bold}/{/bold} search | {bold}R{/bold} refresh | {bold}r{/bold} retry(failed) | {bold}c{/bold} cancel | {bold}p{/bold} publish';
     }
-    return ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}h{/bold} toggle done | {bold}/{/bold} search pipeline';
+    return ' {bold}q{/bold} quit | {bold}↑↓{/bold} navigate workers | {bold}Enter{/bold} view logs | {bold}Tab{/bold} switch panel | {bold}r{/bold} refresh | {bold}/{/bold} search pipeline';
   }
 
   function updateStatusBar(): void {
@@ -894,7 +894,7 @@ export async function dashboard(): Promise<void> {
       pipelineTaskMeta = tree.meta;
       const { lines: treeLines, hiddenCount } = tree;
       const hiddenLabel = hiddenCount > 0
-        ? ` {grey-fg}(${hiddenCount} completed subtree${hiddenCount > 1 ? 's' : ''} hidden){/grey-fg}`
+        ? ` {grey-fg}(${hiddenCount} completed/cancelled hidden){/grey-fg}`
         : '';
       const filterLabel = filterQuery.trim().length > 0
         ? ` {cyan-fg}/ ${filterQuery.trim()}{/cyan-fg}`
@@ -905,7 +905,7 @@ export async function dashboard(): Promise<void> {
         const msg = curFilter.length > 0
           ? `{grey-fg}No tasks match {bold}/${curFilter}{/bold} — press {bold}Esc{/bold} to clear{/grey-fg}`
           : hiddenCount > 0
-            ? `{grey-fg}All visible tasks filtered — press {bold}h{/bold} to show completed subtrees{/grey-fg}`
+            ? `{grey-fg}All tasks hidden — press {bold}h{/bold} to show completed/cancelled{/grey-fg}`
             : '{grey-fg}No tasks{/grey-fg}';
         pipelineBox.setItems([msg]);
       } else {
@@ -963,7 +963,7 @@ export async function dashboard(): Promise<void> {
   });
 
   screen.key(['h'], () => {
-    hideCompletedSubtrees = !hideCompletedSubtrees;
+    hideTerminalTasks = !hideTerminalTasks;
     refresh();
   });
 
