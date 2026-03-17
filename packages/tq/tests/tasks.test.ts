@@ -49,6 +49,10 @@ import {
   batchEnqueue,
   getMaxPriority,
   claim,
+  publish,
+  release,
+  heartbeat,
+  claimById,
 } from '../src/tasks.js';
 
 // ---------------------------------------------------------------------------
@@ -506,5 +510,297 @@ describe('claim', () => {
     // Should be exact match, not the OR NULL pattern
     expect(sql).not.toMatch(/assigned_role = \? OR assigned_role IS NULL/);
     expect(sql).toMatch(/assigned_role = \?/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// publish
+// ---------------------------------------------------------------------------
+
+describe('publish', () => {
+  it('draft in_progress → eligible when no deps', async () => {
+    const row = makeTaskRow({
+      id: 'tq-pub00001',
+      status: 'in_progress',
+      claimed_by: 'refiner-1',
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT * FROM tasks FOR UPDATE
+      .mockResolvedValueOnce([[]])     // SELECT dep statuses (no deps)
+      .mockResolvedValueOnce([[]])     // UPDATE tasks SET status, eligible_at, …
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const task = await publish('tq-pub00001', 'refiner-1');
+    expect(task.status).toBe('eligible');
+    expect(task.eligible_at).not.toBeNull();
+    expect(task.claimed_by).toBeNull();
+    expect(task.claimed_at).toBeNull();
+  });
+
+  it('draft in_progress → pending when pending deps exist', async () => {
+    const row = makeTaskRow({
+      id: 'tq-pub00002',
+      status: 'in_progress',
+      claimed_by: 'refiner-1',
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])                    // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[{ status: 'pending' }]]) // dep statuses: one pending dep
+      .mockResolvedValueOnce([[]])                       // UPDATE tasks
+      .mockResolvedValueOnce([[]]);                      // attachDeps
+
+    const task = await publish('tq-pub00002', 'refiner-1');
+    expect(task.status).toBe('pending');
+    expect(task.eligible_at).toBeNull();
+    expect(task.claimed_by).toBeNull();
+  });
+
+  it('draft in_progress → eligible when all deps are completed', async () => {
+    const row = makeTaskRow({
+      id: 'tq-pub00003',
+      status: 'in_progress',
+      claimed_by: 'refiner-1',
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])                      // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[{ status: 'completed' }]]) // dep statuses: all completed
+      .mockResolvedValueOnce([[]])                         // UPDATE tasks
+      .mockResolvedValueOnce([[]]);                        // attachDeps
+
+    const task = await publish('tq-pub00003', 'refiner-1');
+    expect(task.status).toBe('eligible');
+    expect(task.eligible_at).not.toBeNull();
+  });
+
+  it('throws when task not found', async () => {
+    mockExecute.mockResolvedValueOnce([[]]); // SELECT returns no rows
+
+    await expect(publish('tq-notfound', 'refiner-1')).rejects.toThrow(/Task not found/);
+  });
+
+  it('throws when status is not draft or in_progress', async () => {
+    const row = makeTaskRow({ id: 'tq-pub00004', status: 'eligible' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(publish('tq-pub00004', 'refiner-1')).rejects.toThrow(/cannot be published/);
+  });
+
+  it('throws when in_progress but claimed_by does not match agentId', async () => {
+    const row = makeTaskRow({
+      id: 'tq-pub00005',
+      status: 'in_progress',
+      claimed_by: 'other-agent',
+    });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(publish('tq-pub00005', 'refiner-1')).rejects.toThrow(/not claimed by refiner-1/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// release
+// ---------------------------------------------------------------------------
+
+describe('release', () => {
+  it('happy path: sets status=eligible, clears claimed_by/claimed_at', async () => {
+    const row = makeTaskRow({
+      id: 'tq-rel00001',
+      status: 'in_progress',
+      claimed_by: 'agent-x',
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[]])     // UPDATE tasks SET status='eligible', …
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const task = await release('tq-rel00001', 'agent-x');
+    expect(task.status).toBe('eligible');
+    expect(task.claimed_by).toBeNull();
+    expect(task.claimed_at).toBeNull();
+    expect(task.eligible_at).not.toBeNull();
+  });
+
+  it('force=true: releases even when claimed_by does not match agentId', async () => {
+    const row = makeTaskRow({
+      id: 'tq-rel00002',
+      status: 'in_progress',
+      claimed_by: 'other-agent',
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[]])     // UPDATE
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const task = await release('tq-rel00002', 'agent-x', true /* force */);
+    expect(task.status).toBe('eligible');
+    expect(task.claimed_by).toBeNull();
+  });
+
+  it('throws when task not found', async () => {
+    mockExecute.mockResolvedValueOnce([[]]); // SELECT returns no rows
+
+    await expect(release('tq-notfound', 'agent-x')).rejects.toThrow(/Task not found/);
+  });
+
+  it('throws when task is not in_progress', async () => {
+    const row = makeTaskRow({ id: 'tq-rel00003', status: 'eligible' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(release('tq-rel00003', 'agent-x')).rejects.toThrow(/not in_progress/);
+  });
+
+  it('throws when claimed_by does not match agentId (without force)', async () => {
+    const row = makeTaskRow({
+      id: 'tq-rel00004',
+      status: 'in_progress',
+      claimed_by: 'other-agent',
+    });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(release('tq-rel00004', 'agent-x')).rejects.toThrow(/not claimed by agent-x/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// heartbeat
+// ---------------------------------------------------------------------------
+
+describe('heartbeat', () => {
+  it('happy path: updates claimed_at, returns updated task', async () => {
+    const oldClaimedAt = new Date('2024-01-01T00:00:00.000Z');
+    const row = makeTaskRow({
+      id: 'tq-hb000001',
+      status: 'in_progress',
+      claimed_by: 'agent-y',
+      claimed_at: oldClaimedAt,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[]])     // UPDATE tasks SET claimed_at=?
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const task = await heartbeat('tq-hb000001', 'agent-y');
+    expect(task.status).toBe('in_progress');
+    expect(task.claimed_by).toBe('agent-y');
+    // claimed_at should have been updated to a new date
+    expect(task.claimed_at).not.toBeNull();
+    expect(task.claimed_at).not.toEqual(oldClaimedAt);
+  });
+
+  it('throws when task not found', async () => {
+    mockExecute.mockResolvedValueOnce([[]]); // SELECT returns no rows
+
+    await expect(heartbeat('tq-notfound', 'agent-y')).rejects.toThrow(/Task not found/);
+  });
+
+  it('throws when task is not in_progress', async () => {
+    const row = makeTaskRow({ id: 'tq-hb000002', status: 'eligible' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(heartbeat('tq-hb000002', 'agent-y')).rejects.toThrow(/not in_progress/);
+  });
+
+  it('throws when claimed_by does not match agentId', async () => {
+    const row = makeTaskRow({
+      id: 'tq-hb000003',
+      status: 'in_progress',
+      claimed_by: 'other-agent',
+    });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(heartbeat('tq-hb000003', 'agent-y')).rejects.toThrow(/not claimed by agent-y/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimById
+// ---------------------------------------------------------------------------
+
+describe('claimById', () => {
+  const now = new Date('2024-06-15T12:00:00.000Z');
+
+  it('claims eligible task by ID', async () => {
+    const row = makeTaskRow({
+      id: 'tq-cb000001',
+      status: 'eligible',
+      assigned_role: null,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT FOR UPDATE
+      .mockResolvedValueOnce([[]])     // findEligibleLeaf: no children found
+      .mockResolvedValueOnce([[]])     // UPDATE tasks SET status='in_progress'
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const result = await claimById('tq-cb000001', 'agent-z');
+    expect(result.task).not.toBeNull();
+    expect(result.task!.id).toBe('tq-cb000001');
+    expect(result.task!.status).toBe('in_progress');
+    expect(result.task!.claimed_by).toBe('agent-z');
+  });
+
+  it('claims draft task when draft=true', async () => {
+    const row = makeTaskRow({
+      id: 'tq-cb000002',
+      status: 'draft',
+      assigned_role: null,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[row]])  // SELECT FOR UPDATE (draft, so no findEligibleLeaf)
+      .mockResolvedValueOnce([[]])     // UPDATE tasks SET status='in_progress'
+      .mockResolvedValueOnce([[]]);    // attachDeps
+
+    const result = await claimById('tq-cb000002', 'refiner-1', true /* draft=true */);
+    expect(result.task).not.toBeNull();
+    expect(result.task!.id).toBe('tq-cb000002');
+    expect(result.task!.status).toBe('in_progress');
+    expect(result.task!.claimed_by).toBe('refiner-1');
+  });
+
+  it('follows eligible leaf delegation to child task', async () => {
+    const parentRow = makeTaskRow({
+      id: 'tq-cb000003',
+      status: 'eligible',
+      assigned_role: null,
+    });
+    const childRow = makeTaskRow({
+      id: 'tq-cb000003.child01',
+      status: 'eligible',
+      parent_id: 'tq-cb000003',
+      assigned_role: null,
+    });
+    mockExecute
+      .mockResolvedValueOnce([[parentRow]])  // SELECT FOR UPDATE (parent)
+      .mockResolvedValueOnce([[childRow]])   // findEligibleLeaf: child found
+      .mockResolvedValueOnce([[]])           // findEligibleLeaf recursive: no deeper child
+      .mockResolvedValueOnce([[]])           // UPDATE tasks SET status='in_progress'
+      .mockResolvedValueOnce([[]]);          // attachDeps
+
+    const result = await claimById('tq-cb000003', 'agent-z');
+    expect(result.task).not.toBeNull();
+    // Should have claimed the child, not the parent
+    expect(result.task!.id).toBe('tq-cb000003.child01');
+    expect(result.task!.status).toBe('in_progress');
+  });
+
+  it('throws when task not found', async () => {
+    mockExecute.mockResolvedValueOnce([[]]); // SELECT returns no rows
+
+    await expect(claimById('tq-notfound', 'agent-z')).rejects.toThrow(/Task not found/);
+  });
+
+  it('throws when task status is not eligible (or draft when draft=false)', async () => {
+    const row = makeTaskRow({ id: 'tq-cb000004', status: 'in_progress' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(claimById('tq-cb000004', 'agent-z')).rejects.toThrow(/cannot be claimed/);
+  });
+
+  it('throws when task is draft and draft=false', async () => {
+    const row = makeTaskRow({ id: 'tq-cb000005', status: 'draft' });
+    mockExecute.mockResolvedValueOnce([[row]]);
+
+    await expect(claimById('tq-cb000005', 'agent-z', false /* draft=false */)).rejects.toThrow(
+      /cannot be claimed/,
+    );
   });
 });
