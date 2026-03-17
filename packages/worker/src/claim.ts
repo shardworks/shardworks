@@ -1,4 +1,4 @@
-import { claim, claimById, release, listTasks } from '@shardworks/tq/src/tasks.js';
+import { claim, claimById, release, fail, listTasks } from '@shardworks/tq/src/tasks.js';
 
 /**
  * Returns true if a task has direct children in the 'draft' status.
@@ -92,4 +92,16 @@ export async function claimTaskById(agentId: string, _workDir: string, taskId: s
  */
 export async function releaseTask(agentId: string, _workDir: string, taskId: string): Promise<void> {
   await release(taskId, agentId);
+}
+
+/**
+ * Fail a claimed task with a reason string.  If the task has remaining
+ * attempts (max_attempts > attempt_count + 1), it is released back to
+ * eligible after a backoff so another worker can retry it.  Otherwise it
+ * transitions to the terminal `failed` state.
+ *
+ * Used by the worker when a post-completion operation (e.g. merge) fails.
+ */
+export async function failTask(agentId: string, taskId: string, reason: string): Promise<void> {
+  await fail(taskId, agentId, reason);
 }

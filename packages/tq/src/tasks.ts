@@ -168,8 +168,8 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
 
     await conn.execute(
       `INSERT INTO tasks
-         (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at${input.max_attempts !== undefined ? ', max_attempts' : ''})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${input.max_attempts !== undefined ? ', ?' : ''})`,
       [
         id,
         input.description,
@@ -181,6 +181,7 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
         input.assigned_role ?? null,
         now,
         eligibleAt,
+        ...(input.max_attempts !== undefined ? [input.max_attempts] : []),
       ],
     );
 
@@ -209,6 +210,9 @@ export async function enqueue(input: EnqueueInput): Promise<Task> {
         created_by: input.created_by,
         claimed_by: null,
         assigned_role: input.assigned_role ?? null,
+        // Use the explicitly-provided value, or the DB default (3 after migration 006).
+        max_attempts: input.max_attempts ?? 3,
+        attempt_count: 0,
         created_at: now,
         eligible_at: eligibleAt,
         claimed_at: null,
@@ -566,8 +570,8 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
 
       await conn.execute(
         `INSERT INTO tasks
-           (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, description, payload, status, parent_id, priority, created_by, assigned_role, created_at, eligible_at${t.max_attempts !== undefined ? ', max_attempts' : ''})
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${t.max_attempts !== undefined ? ', ?' : ''})`,
         [
           id,
           t.description,
@@ -579,6 +583,7 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
           t.assigned_role ?? null,
           taskTime,
           eligibleAt,
+          ...(t.max_attempts !== undefined ? [t.max_attempts] : []),
         ],
       );
 
@@ -606,6 +611,9 @@ export async function batchEnqueue(input: BatchEnqueueInput): Promise<Task[]> {
           created_by: input.created_by,
           claimed_by: null,
           assigned_role: t.assigned_role ?? null,
+          // Use the explicitly-provided value, or the DB default (3 after migration 006).
+          max_attempts: t.max_attempts ?? 3,
+          attempt_count: 0,
           created_at: taskTime,
           eligible_at: eligibleAt,
           claimed_at: null,

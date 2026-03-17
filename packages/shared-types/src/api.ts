@@ -19,6 +19,11 @@ export interface EnqueueInput {
   assigned_role?: string;
   /** Optional capability tags required to claim this task (e.g. ['gpu', 'large-context']). */
   tags?: string[];
+  /**
+   * Maximum number of execution attempts before the task is permanently failed.
+   * Defaults to the DB column default (3) when not specified.
+   */
+  max_attempts?: number;
 }
 
 /**

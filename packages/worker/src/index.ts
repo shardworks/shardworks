@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { program, configFromParsedOpts } from './config.js';
 import { loadRole } from './roles.js';
-import { claimTask, claimTaskById, releaseTask } from './claim.js';
+import { claimTask, claimTaskById, releaseTask, failTask } from './claim.js';
 import { launch } from './launcher.js';
 import { mergeWorktreeToMain } from './merge.js';
 import type { ConductedConfig } from './config.js';
@@ -162,7 +162,11 @@ async function main(): Promise<void> {
           process.stderr.write(`worker: merged worktree to main (${commitSha})\n`);
         }
       } else {
-        process.stderr.write(`worker: merge failed [${merge.reason}]: ${merge.msg}\n`);
+        // Merge failed — self-heal: fail the task (which releases it for retry
+        // if attempts remain) and signal the conductor.  The worktree and branch
+        // were already nuked by mergeWorktreeToMain before returning.
+        const failReason = `merge failed [${merge.reason}]: ${merge.msg}`;
+        process.stderr.write(`worker: ${failReason}\n`);
         appendConductorSignal(conducted.workDir, {
           type: 'merge_failed',
           task_id: conducted.taskId,
@@ -170,6 +174,24 @@ async function main(): Promise<void> {
           reason: merge.reason,
           msg: merge.msg,
         });
+
+        try {
+          await failTask(conducted.agentId, conducted.taskId, failReason);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`worker: failed to mark task as failed: ${msg}\n`);
+        }
+
+        writeExitStatus({
+          status: 'failed',
+          task_id: conducted.taskId,
+          agent_id: conducted.agentId,
+          session_id: launchResult.sessionId,
+          cost_usd: launchResult.result?.costUsd ?? 0,
+          start_commit_hash: launchResult.startCommitHash,
+          error: failReason,
+        });
+        process.exit(1);
       }
     }
 

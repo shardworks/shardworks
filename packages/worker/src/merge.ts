@@ -182,6 +182,8 @@ export async function mergeWorktreeToMain(
     if (!autoResolved) {
       // Abort to leave the repo clean (harmless if no merge is in-progress)
       await exec('git', ['merge', '--abort'], workDir);
+      // Nuke the worktree and branch so the next worker starts fresh from main
+      await cleanupWorktree(workDir, worktreePath, branchName);
       return {
         ok: false,
         reason: 'conflict',
@@ -198,6 +200,8 @@ export async function mergeWorktreeToMain(
   if (!pushed.ok) {
     // Roll back the local merge commit so HEAD stays clean
     await exec('git', ['reset', '--hard', 'ORIG_HEAD'], workDir);
+    // Nuke the worktree and branch so the next worker starts fresh from main
+    await cleanupWorktree(workDir, worktreePath, branchName);
     return {
       ok: false,
       reason: 'push-failed',
@@ -323,8 +327,10 @@ async function cleanupWorktree(
   if (existsSync(worktreePath)) {
     await exec('git', ['worktree', 'remove', '--force', worktreePath], workDir);
   }
-  // Delete the local branch (skip if no branch was created, e.g. no-branch case)
+  // Delete the local branch (skip if no branch was created, e.g. no-branch case).
+  // Use -D (force delete) so this succeeds even when the branch has commits that
+  // were never merged into main (e.g. after a conflict or push-failure cleanup).
   if (branchName) {
-    await exec('git', ['branch', '-d', branchName], workDir);
+    await exec('git', ['branch', '-D', branchName], workDir);
   }
 }
