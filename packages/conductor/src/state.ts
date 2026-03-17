@@ -1,4 +1,4 @@
-import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, unlink, mkdir, open } from 'node:fs/promises';
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -20,6 +20,51 @@ export function statePath(workDir: string): string {
 
 export function logPath(workDir: string): string {
   return join(dataDir(workDir), 'conductor.jsonl');
+}
+
+export function startLockPath(workDir: string): string {
+  return join(dataDir(workDir), 'conductor-start.lock');
+}
+
+// ---------------------------------------------------------------------------
+// Start-command mutual exclusion lock
+// ---------------------------------------------------------------------------
+
+/**
+ * Acquire an exclusive start-lock, run `fn`, then release the lock.
+ *
+ * Uses O_CREAT|O_EXCL (the `wx` open flag) which is atomic on POSIX: only one
+ * caller can create the file.  If a concurrent `conductor start` already holds
+ * the lock, this throws with `code === 'EEXIST'`.
+ *
+ * The lock is always released in a `finally` block so a crash or error in `fn`
+ * cannot leave a stale lock.
+ */
+export async function withStartLock<T>(workDir: string, fn: () => Promise<T>): Promise<T> {
+  await mkdir(dataDir(workDir), { recursive: true });
+  const lockFile = startLockPath(workDir);
+
+  // O_WRONLY | O_CREAT | O_EXCL — atomically fails with EEXIST if already present
+  let fh;
+  try {
+    fh = await open(lockFile, 'wx');
+  } catch (err: unknown) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EEXIST') {
+      throw new Error(
+        'Another "conductor start" is already in progress (lock file exists). ' +
+        `If this is stale, remove ${lockFile} and retry.`,
+      );
+    }
+    throw err;
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await fh.close();
+    try { await unlink(lockFile); } catch { /* ignore — already gone is fine */ }
+  }
 }
 
 // ---------------------------------------------------------------------------
