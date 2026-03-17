@@ -13,6 +13,7 @@ import {
   isAlive,
   readState,
   logPath,
+  withStartLock,
   type LogEntry,
 } from './state.js';
 import { loadConfig } from './config.js';
@@ -81,37 +82,52 @@ program
   }) => {
     const workDir = opts.workdir ?? workDirFromEnvOrCwd();
 
-    // Check if already running
-    const existingPid = await readPid(workDir);
-    if (existingPid !== null && isAlive(existingPid)) {
-      console.error(`Conductor is already running (PID ${existingPid}). Use 'conductor stop' first.`);
+    // Acquire an exclusive start-lock before the check-and-spawn sequence so
+    // that two concurrent `conductor start` invocations cannot both pass the
+    // "is alive?" check, both spawn daemons, and leave an orphaned process.
+    let pid: number;
+    try {
+      pid = await withStartLock(workDir, async () => {
+        // Check if already running (inside the lock, so no race)
+        const existingPid = await readPid(workDir);
+        if (existingPid !== null && isAlive(existingPid)) {
+          console.error(`Conductor is already running (PID ${existingPid}). Use 'conductor stop' first.`);
+          process.exit(1);
+        }
+
+        // Spawn the daemon as a fully detached background process
+        const child = spawn(conductorBin(), ['_daemon'], {
+          cwd: workDir,
+          detached: true,
+          stdio: 'ignore',
+          env: {
+            ...process.env,
+            WORK_DIR: workDir,
+            CONDUCTOR_MAX_WORKERS: opts.maxWorkers,
+            CONDUCTOR_POLL_INTERVAL: opts.pollInterval,
+            CONDUCTOR_STALE_AFTER: opts.staleAfter,
+            ...(opts.alertWebhook ? { CONDUCTOR_ALERT_WEBHOOK: opts.alertWebhook } : {}),
+          },
+        });
+
+        child.unref();
+
+        const spawnedPid = child.pid;
+        if (!spawnedPid) {
+          console.error('Failed to spawn conductor daemon (no PID assigned).');
+          process.exit(1);
+        }
+
+        // Write PID while still holding the lock, so any concurrent starter
+        // that is waiting will see the live process and abort.
+        await writePid(workDir, spawnedPid);
+        return spawnedPid;
+      });
+    } catch (err: unknown) {
+      const e = err as Error;
+      console.error(`conductor start failed: ${e.message}`);
       process.exit(1);
     }
-
-    // Spawn the daemon as a fully detached background process
-    const child = spawn(conductorBin(), ['_daemon'], {
-      cwd: workDir,
-      detached: true,
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        WORK_DIR: workDir,
-        CONDUCTOR_MAX_WORKERS: opts.maxWorkers,
-        CONDUCTOR_POLL_INTERVAL: opts.pollInterval,
-        CONDUCTOR_STALE_AFTER: opts.staleAfter,
-        ...(opts.alertWebhook ? { CONDUCTOR_ALERT_WEBHOOK: opts.alertWebhook } : {}),
-      },
-    });
-
-    child.unref();
-
-    const pid = child.pid;
-    if (!pid) {
-      console.error('Failed to spawn conductor daemon (no PID assigned).');
-      process.exit(1);
-    }
-
-    await writePid(workDir, pid);
 
     console.log(`Conductor started (PID ${pid}).`);
     console.log(`  Logs:   conductor logs`);
