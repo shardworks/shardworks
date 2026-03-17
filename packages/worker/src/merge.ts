@@ -1,5 +1,5 @@
 import { existsSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { exec } from './utils.js';
 
 // ---------------------------------------------------------------------------
@@ -176,13 +176,19 @@ export async function mergeWorktreeToMain(
   }
 
   if (mergeResult.exitCode !== 0) {
-    // Abort to leave the repo clean
-    await exec('git', ['merge', '--abort'], workDir);
-    return {
-      ok: false,
-      reason: 'conflict',
-      msg: `Merge conflict merging ${branchName} into main: ${mergeResult.stderr.trim()}`,
-    };
+    // Before aborting, check if the ONLY conflicting files are package-lock.json.
+    // If so, auto-resolve by accepting --theirs and regenerating via npm install.
+    const autoResolved = await tryAutoResolveLockfileConflicts(workDir);
+    if (!autoResolved) {
+      // Abort to leave the repo clean (harmless if no merge is in-progress)
+      await exec('git', ['merge', '--abort'], workDir);
+      return {
+        ok: false,
+        reason: 'conflict',
+        msg: `Merge conflict merging ${branchName} into main: ${mergeResult.stderr.trim()}`,
+      };
+    }
+    // Auto-resolution succeeded — fall through to push
   }
 
   // ------------------------------------------------------------------
@@ -231,6 +237,55 @@ async function pushWithRetry(workDir: string): Promise<{ ok: boolean; msg: strin
   if (push2.exitCode === 0) return { ok: true, msg: '' };
 
   return { ok: false, msg: push2.stderr.trim() };
+}
+
+/**
+ * After a failed `git merge`, detect whether the ONLY conflicting files are
+ * `package-lock.json` files.  If so, resolve each one by:
+ *   1. `git checkout --theirs <file>` — accept the incoming branch's version
+ *   2. `npm install --package-lock-only` in the containing directory — regenerate
+ *      a correct lockfile from `package.json` without touching `node_modules`
+ *   3. `git add <file>` — stage the resolved file
+ * Then commit to finalise the pending merge commit (`--no-edit` preserves the
+ * message set by the original `-m` flags).
+ *
+ * Returns `true` if the conflict was fully resolved and committed, `false` if
+ * other files are also conflicting or if any resolution step fails (the caller
+ * is responsible for running `git merge --abort` in that case).
+ */
+async function tryAutoResolveLockfileConflicts(workDir: string): Promise<boolean> {
+  // List all unmerged (conflicting) files in the current merge state
+  const { stdout, exitCode } = await exec(
+    'git', ['diff', '--name-only', '--diff-filter=U'], workDir,
+  );
+  if (exitCode !== 0) return false;
+
+  const conflictingFiles = stdout.trim().split('\n').filter(Boolean);
+  if (conflictingFiles.length === 0) return false;
+
+  // Only proceed when ALL conflicting files are package-lock.json
+  const allLockFiles = conflictingFiles.every(f => basename(f) === 'package-lock.json');
+  if (!allLockFiles) return false;
+
+  // Resolve each lock file
+  for (const lockFile of conflictingFiles) {
+    // Accept the incoming branch's version as a valid starting point
+    const checkout = await exec('git', ['checkout', '--theirs', lockFile], workDir);
+    if (checkout.exitCode !== 0) return false;
+
+    // Regenerate the lockfile from package.json without installing node_modules
+    const lockDir = dirname(lockFile) === '.' ? workDir : join(workDir, dirname(lockFile));
+    const npmInstall = await exec('npm', ['install', '--package-lock-only'], lockDir);
+    if (npmInstall.exitCode !== 0) return false;
+
+    // Stage the resolved file
+    const add = await exec('git', ['add', lockFile], workDir);
+    if (add.exitCode !== 0) return false;
+  }
+
+  // Finalise the pending merge commit (preserves the -m message from the merge)
+  const commit = await exec('git', ['commit', '--no-edit'], workDir);
+  return commit.exitCode === 0;
 }
 
 /**

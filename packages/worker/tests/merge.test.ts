@@ -321,6 +321,8 @@ describe('mergeWorktreeToMain — merge conflict', () => {
       .mockResolvedValueOnce(ok('1')) // rev-list
       .mockResolvedValueOnce(ok(JSON.stringify({ description: 'task', claimed_at: null, completed_at: null })))
       .mockResolvedValueOnce(err('CONFLICT (content): Merge conflict in src/foo.ts')) // merge
+      // tryAutoResolveLockfileConflicts: diff returns non-lock file → returns false
+      .mockResolvedValueOnce(ok('src/foo.ts'))  // git diff --name-only --diff-filter=U
       .mockResolvedValueOnce(ok());   // git merge --abort
 
     const result = await mergeWorktreeToMain(TASK_ID, WORK_DIR, AGENT);
@@ -332,6 +334,76 @@ describe('mergeWorktreeToMain — merge conflict', () => {
       (c) => c[0] === 'git' && c[1].includes('--abort'),
     );
     expect(abortCall).toBeDefined();
+  });
+
+  it('auto-resolves when the only conflict is package-lock.json', async () => {
+    mockExec
+      .mockResolvedValueOnce(ok())    // rev-parse
+      .mockResolvedValueOnce(ok())    // fetch
+      .mockResolvedValueOnce(ok('1')) // rev-list
+      .mockResolvedValueOnce(ok(JSON.stringify({ description: 'task', claimed_at: null, completed_at: null })))
+      .mockResolvedValueOnce(err('CONFLICT (content): Merge conflict in package-lock.json')) // merge
+      // tryAutoResolveLockfileConflicts: only package-lock.json
+      .mockResolvedValueOnce(ok('package-lock.json'))  // git diff --name-only --diff-filter=U
+      .mockResolvedValueOnce(ok())    // git checkout --theirs package-lock.json
+      .mockResolvedValueOnce(ok())    // npm install --package-lock-only
+      .mockResolvedValueOnce(ok())    // git add package-lock.json
+      .mockResolvedValueOnce(ok())    // git commit --no-edit
+      // push flow
+      .mockResolvedValueOnce(ok())    // git push origin main
+      .mockResolvedValueOnce(ok('auto-sha')) // git rev-parse HEAD
+      .mockResolvedValueOnce(ok());   // git branch -d
+
+    const result = await mergeWorktreeToMain(TASK_ID, WORK_DIR, AGENT);
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBe('merged');
+    expect(result.commitSha).toBe('auto-sha');
+
+    // Confirm git merge --abort was NOT called
+    const abortCall = mockExec.mock.calls.find(
+      (c) => c[0] === 'git' && c[1].includes('--abort'),
+    );
+    expect(abortCall).toBeUndefined();
+
+    // Confirm npm install --package-lock-only was called
+    const npmCall = mockExec.mock.calls.find(
+      (c) => c[0] === 'npm' && c[1].includes('--package-lock-only'),
+    );
+    expect(npmCall).toBeDefined();
+  });
+
+  it('falls back to conflict when npm install fails during lock-file auto-resolution', async () => {
+    mockExec
+      .mockResolvedValueOnce(ok())    // rev-parse
+      .mockResolvedValueOnce(ok())    // fetch
+      .mockResolvedValueOnce(ok('1')) // rev-list
+      .mockResolvedValueOnce(ok(JSON.stringify({ description: 'task', claimed_at: null, completed_at: null })))
+      .mockResolvedValueOnce(err('CONFLICT (content): Merge conflict in package-lock.json')) // merge
+      // tryAutoResolveLockfileConflicts: npm install fails
+      .mockResolvedValueOnce(ok('package-lock.json'))  // git diff --name-only --diff-filter=U
+      .mockResolvedValueOnce(ok())    // git checkout --theirs package-lock.json
+      .mockResolvedValueOnce(err('npm ERR! missing package.json')) // npm install fails
+      .mockResolvedValueOnce(ok());   // git merge --abort
+
+    const result = await mergeWorktreeToMain(TASK_ID, WORK_DIR, AGENT);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('conflict');
+  });
+
+  it('falls back to conflict when package-lock.json conflicts alongside other files', async () => {
+    mockExec
+      .mockResolvedValueOnce(ok())    // rev-parse
+      .mockResolvedValueOnce(ok())    // fetch
+      .mockResolvedValueOnce(ok('1')) // rev-list
+      .mockResolvedValueOnce(ok(JSON.stringify({ description: 'task', claimed_at: null, completed_at: null })))
+      .mockResolvedValueOnce(err('CONFLICT in src/index.ts\nCONFLICT in package-lock.json')) // merge
+      // tryAutoResolveLockfileConflicts: mixed files — bail out
+      .mockResolvedValueOnce(ok('src/index.ts\npackage-lock.json'))  // git diff --name-only --diff-filter=U
+      .mockResolvedValueOnce(ok());   // git merge --abort
+
+    const result = await mergeWorktreeToMain(TASK_ID, WORK_DIR, AGENT);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('conflict');
   });
 });
 
@@ -377,6 +449,8 @@ describe('mergeWorktreeToMain — untracked file retry', () => {
       .mockResolvedValueOnce(ok(JSON.stringify({ description: 'task', claimed_at: null, completed_at: null })))
       .mockResolvedValueOnce(err(untrackedStderr))       // first merge → untracked
       .mockResolvedValueOnce(err('still conflicting'))  // second merge → still fails
+      // tryAutoResolveLockfileConflicts: non-lock conflict → bail
+      .mockResolvedValueOnce(ok('src/bar.ts'))  // git diff --name-only --diff-filter=U
       .mockResolvedValueOnce(ok());   // git merge --abort
 
     const result = await mergeWorktreeToMain(TASK_ID, WORK_DIR, AGENT);
