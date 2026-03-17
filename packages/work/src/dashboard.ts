@@ -263,11 +263,19 @@ export async function dashboard(): Promise<void> {
     }
   }
 
-  /** Read the conductor state file and build a taskId→role map. */
+  /** Cache for conductorRoleMap: stores last-seen mtime and the parsed map. */
+  let _conductorRoleCache: { mtimeMs: number; map: Map<string, string> } | null = null;
+
+  /** Read the conductor state file and build a taskId→role map.
+   *  Uses an mtime cache so the file is only re-read when it actually changes. */
   async function conductorRoleMap(): Promise<Map<string, string>> {
     const workDir = process.env['WORK_DIR'] ?? process.cwd();
     const statePath = join(workDir, 'data', 'conductor-state.json');
     try {
+      const { mtimeMs } = await stat(statePath);
+      if (_conductorRoleCache && _conductorRoleCache.mtimeMs === mtimeMs) {
+        return _conductorRoleCache.map;
+      }
       const raw = await readFile(statePath, 'utf8');
       const state = JSON.parse(raw) as {
         activeWorkers?: Array<{ taskId: string | null; role: string }>;
@@ -276,6 +284,7 @@ export async function dashboard(): Promise<void> {
       for (const w of state.activeWorkers ?? []) {
         if (w.taskId) map.set(w.taskId, w.role);
       }
+      _conductorRoleCache = { mtimeMs, map };
       return map;
     } catch {
       return new Map();
