@@ -16,6 +16,20 @@ import { pool, withCommit, withTransaction } from './db.js';
 import { generateId, generateChildId } from './id.js';
 
 // ---------------------------------------------------------------------------
+// BriefTask — lightweight projection for --brief flag
+// ---------------------------------------------------------------------------
+
+export interface BriefTask {
+  id: string;
+  description: string;
+  status: TaskStatus;
+  priority: number;
+  assigned_role: string | null;
+  parent_id: string | null;
+  claimed_by: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Row → Task conversion
 // ---------------------------------------------------------------------------
 
@@ -67,6 +81,18 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
     claimed_at: row.claimed_at ?? null,
     completed_at: row.completed_at ?? null,
     dependencies: deps,
+  };
+}
+
+function rowToBriefTask(row: RowDataPacket): BriefTask {
+  return {
+    id: row['id'] as string,
+    description: row['description'] as string,
+    status: row['status'] as TaskStatus,
+    priority: row['priority'] as number,
+    assigned_role: (row['assigned_role'] as string | null) ?? null,
+    parent_id: (row['parent_id'] as string | null) ?? null,
+    claimed_by: (row['claimed_by'] as string | null) ?? null,
   };
 }
 
@@ -259,7 +285,7 @@ export interface ListFilters {
   assigned_role?: string | null;
 }
 
-export async function listTasks(filters: ListFilters = {}, branch?: string): Promise<Task[]> {
+export async function listTasks(filters: ListFilters = {}, branch?: string, brief?: boolean): Promise<Task[] | BriefTask[]> {
   const conn = await pool.getConnection();
   try {
     const conditions: string[] = [];
@@ -284,6 +310,15 @@ export async function listTasks(filters: ListFilters = {}, branch?: string): Pro
 
     const asOfClause = branch ? ` AS OF '${branch}'` : '';
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    if (brief) {
+      const [rows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, description, status, priority, assigned_role, parent_id, claimed_by FROM tasks${asOfClause} ${where} ORDER BY priority DESC, created_at ASC`,
+        params,
+      );
+      return rows.map(r => rowToBriefTask(r));
+    }
+
     const [rows] = await conn.execute<TaskRow[]>(
       `SELECT * FROM tasks${asOfClause} ${where} ORDER BY priority DESC, created_at ASC`,
       params,
@@ -1416,15 +1451,34 @@ export async function rejectTask(taskId: string, actorId: string, reason?: strin
 // T12 — Subtree + ready
 // ---------------------------------------------------------------------------
 
-export async function subtree(parentId: string): Promise<SubtreeResult> {
+export async function subtree(parentId: string, brief?: boolean): Promise<SubtreeResult | { tasks: BriefTask[]; rollup: StatusRollup }> {
   const conn = await pool.getConnection();
   try {
     // Verify parent exists
-    const [parentRows] = await conn.execute<TaskRow[]>(
-      'SELECT * FROM tasks WHERE id = ?',
+    const [parentRows] = await conn.execute<RowDataPacket[]>(
+      'SELECT id FROM tasks WHERE id = ?',
       [parentId],
     );
     if (parentRows.length === 0) throw new Error(`Task not found: ${parentId}`);
+
+    if (brief) {
+      const [rows] = await conn.execute<RowDataPacket[]>(
+        `WITH RECURSIVE sub AS (
+           SELECT id, description, status, priority, assigned_role, parent_id, claimed_by FROM tasks WHERE id = ?
+           UNION ALL
+           SELECT t.id, t.description, t.status, t.priority, t.assigned_role, t.parent_id, t.claimed_by FROM tasks t JOIN sub s ON t.parent_id = s.id
+         )
+         SELECT * FROM sub WHERE id != ?
+         ORDER BY priority DESC`,
+        [parentId, parentId],
+      );
+      const tasks = rows.map(r => rowToBriefTask(r));
+      const rollup: StatusRollup = {
+        draft: 0, pending: 0, eligible: 0, in_progress: 0, completed: 0, failed: 0, cancelled: 0, blocked: 0, total: tasks.length,
+      };
+      for (const t of tasks) rollup[t.status]++;
+      return { tasks, rollup };
+    }
 
     // Recursive CTE — supported by Dolt (MySQL 8+)
     const [rows] = await conn.execute<TaskRow[]>(
@@ -1453,10 +1507,18 @@ export async function subtree(parentId: string): Promise<SubtreeResult> {
   }
 }
 
-export async function ready(branch?: string): Promise<Task[]> {
+export async function ready(branch?: string, brief?: boolean): Promise<Task[] | BriefTask[]> {
   const conn = await pool.getConnection();
   try {
     const asOfClause = branch ? ` AS OF '${branch}'` : '';
+
+    if (brief) {
+      const [rows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, description, status, priority, assigned_role, parent_id, claimed_by FROM tasks${asOfClause} WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
+      );
+      return rows.map(r => rowToBriefTask(r));
+    }
+
     const [rows] = await conn.execute<TaskRow[]>(
       `SELECT * FROM tasks${asOfClause} WHERE status = 'eligible' ORDER BY priority DESC, eligible_at ASC`,
     );

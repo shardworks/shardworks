@@ -407,7 +407,8 @@ program
   .option('--created-by <id>', 'Filter by creator')
   .option('--assigned-role <role>', 'Filter by assigned role (use "none" for unassigned tasks)')
   .option('--branch <name>', 'Dolt branch to query (default: main)')
-  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string; branch?: string }) => {
+  .option('--brief', 'Return only id, description, status, priority, assigned_role, parent_id, claimed_by (omits payload/result fields)')
+  .action(async (opts: { status?: string; parent?: string; createdBy?: string; assignedRole?: string; branch?: string; brief?: boolean }) => {
     await run(async () => {
       const filters: ListFilters = {};
       if (opts.status)  filters.status     = opts.status as TaskStatus;
@@ -416,7 +417,7 @@ program
       if (opts.assignedRole !== undefined) {
         filters.assigned_role = opts.assignedRole === 'none' ? null : opts.assignedRole;
       }
-      return listTasks(filters, opts.branch);
+      return listTasks(filters, opts.branch, opts.brief);
     }, { skipSchema: true });
   });
 
@@ -454,8 +455,9 @@ program
   .command('ready')
   .description('List all currently claimable tasks, highest priority first')
   .option('--branch <name>', 'Dolt branch to query (default: main)')
-  .action(async (opts: { branch?: string }) => {
-    await run(() => ready(opts.branch), { skipSchema: true });
+  .option('--brief', 'Return only id, description, status, priority, assigned_role, parent_id, claimed_by (omits payload/result fields)')
+  .action(async (opts: { branch?: string; brief?: boolean }) => {
+    await run(() => ready(opts.branch, opts.brief), { skipSchema: true });
   });
 
 // ── tq subtree ──────────────────────────────────────────────────────────────
@@ -463,8 +465,9 @@ program
 program
   .command('subtree <id>')
   .description('Show all descendants of a task with a status rollup')
-  .action(async (id: string) => {
-    await run(() => subtree(id), { skipSchema: true });
+  .option('--brief', 'Return only id, description, status, priority, assigned_role, parent_id, claimed_by (omits payload/result fields)')
+  .action(async (id: string, opts: { brief?: boolean }) => {
+    await run(() => subtree(id, opts.brief), { skipSchema: true });
   });
 
 // ── tq dep-results ──────────────────────────────────────────────────────────
