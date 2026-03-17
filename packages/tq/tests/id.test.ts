@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { generateId, generateChildId } from '../src/id.js';
 
 describe('generateId', () => {
-  it('returns a string matching tq-XXXXXXXX format', () => {
+  it('returns a string matching tq-XXXXXXXXXXXX format', () => {
     const id = generateId('test task', 'user-1', new Date('2024-01-01T00:00:00.000Z'));
-    expect(id).toMatch(/^tq-[0-9a-f]{8}$/);
+    expect(id).toMatch(/^tq-[0-9a-f]{12}$/);
   });
 
   it('is deterministic for identical inputs', () => {
@@ -34,11 +34,11 @@ describe('generateId', () => {
     expect(id1).not.toBe(id2);
   });
 
-  it('hash is always 8 hex characters', () => {
+  it('hash is always 12 hex characters', () => {
     for (let i = 0; i < 10; i++) {
       const id = generateId(`task ${i}`, 'user', new Date());
       const hash = id.replace('tq-', '');
-      expect(hash).toHaveLength(8);
+      expect(hash).toHaveLength(12);
       expect(hash).toMatch(/^[0-9a-f]+$/);
     }
   });
@@ -48,7 +48,7 @@ describe('generateChildId', () => {
   it('returns string formatted as "<parentId>.<hash>"', () => {
     const parentId = 'tq-abc12345';
     const id = generateChildId(parentId, 'child task', 'user-1', new Date('2024-01-01T00:00:00.000Z'));
-    expect(id).toMatch(/^tq-abc12345\.[0-9a-f]{8}$/);
+    expect(id).toMatch(/^tq-abc12345\.[0-9a-f]{12}$/);
   });
 
   it('is deterministic for identical inputs', () => {
