@@ -813,6 +813,7 @@ export async function complete(
   taskId: string,
   agentId: string,
   resultPayload?: unknown,
+  resultSummary?: string,
 ): Promise<Task> {
   return withCommit(`[complete] ${taskId} by ${agentId}`, async conn => {
     const [rows] = await conn.execute<TaskRow[]>(
@@ -826,15 +827,20 @@ export async function complete(
 
     const now = new Date();
     await conn.execute(
-      `UPDATE tasks SET status = 'completed', result_payload = ?, completed_at = ? WHERE id = ?`,
-      [resultPayload !== undefined ? JSON.stringify(resultPayload) : null, now, taskId],
+      `UPDATE tasks SET status = 'completed', result_payload = ?, result_summary = ?, completed_at = ? WHERE id = ?`,
+      [
+        resultPayload !== undefined ? JSON.stringify(resultPayload) : null,
+        resultSummary !== undefined ? resultSummary : null,
+        now,
+        taskId,
+      ],
     );
 
     await promoteEligible(conn, taskId);
 
     const depsMap = await attachDeps(conn, [taskId]);
     return rowToTask(
-      { ...row, status: 'completed', result_payload: resultPayload ?? null, completed_at: now },
+      { ...row, status: 'completed', result_payload: resultPayload ?? null, result_summary: resultSummary ?? null, completed_at: now },
       depsMap.get(taskId) ?? [],
     );
   });
