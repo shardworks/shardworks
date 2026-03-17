@@ -10,6 +10,7 @@ import type {
   DepResults,
   TaskRelationship,
   RelationshipType,
+  TaskDbRow,
 } from '@shardworks/shared-types';
 import { pool, withCommit, withTransaction } from './db.js';
 import { generateId, generateChildId } from './id.js';
@@ -18,26 +19,10 @@ import { generateId, generateChildId } from './id.js';
 // Row → Task conversion
 // ---------------------------------------------------------------------------
 
-interface TaskRow extends RowDataPacket {
-  id: string;
-  description: string;
-  payload: unknown;
-  status: string;
-  parent_id: string | null;
-  priority: number;
-  result_payload: unknown;
-  result_summary: unknown;
-  created_by: string;
-  claimed_by: string | null;
-  assigned_role: string | null;
-  max_attempts: number;
-  attempt_count: number;
-  timeout_seconds: number | null;
-  created_at: Date;
-  eligible_at: Date | null;
-  claimed_at: Date | null;
-  completed_at: Date | null;
-}
+// TaskDbRow (from @shardworks/shared-types) is the single source of truth for
+// the tasks table schema.  Extending it here adds the mysql2 RowDataPacket
+// marker so that typed execute<TaskRow[]>() calls work correctly.
+interface TaskRow extends RowDataPacket, TaskDbRow {}
 
 function parseJson(val: unknown): unknown {
   if (typeof val === 'string') {

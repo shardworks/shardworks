@@ -12,22 +12,16 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import type { RowDataPacket } from 'mysql2/promise';
+import type { TaskDbRow } from '@shardworks/shared-types';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface TaskRow extends RowDataPacket {
-  id: string;
-  description: string;
-  status: string;
-  parent_id: string | null;
-  priority: number;
-  claimed_by: string | null;
-  claimed_at: Date | null;
-  created_at: Date;
-  assigned_role: string | null;
-}
+// TaskDbRow (from @shardworks/shared-types) is the single source of truth for
+// the tasks table schema.  Extending it here adds the mysql2 RowDataPacket
+// marker so that typed execute<TaskRow[]>() calls work correctly.
+interface TaskRow extends RowDataPacket, TaskDbRow {}
 
 interface StatusCounts {
   pending: number;
