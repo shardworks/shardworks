@@ -8,6 +8,7 @@ import type { ConductedConfig } from './config.js';
 import type { LaunchResult } from './launcher.js';
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { RateLimitSignal, CrashedSignal, MergeFailedSignal } from '@shardworks/shared-types';
 
 // ---------------------------------------------------------------------------
 // Exit codes
@@ -25,7 +26,9 @@ const EX_TEMPFAIL = 75;
  * conductor can react on its next tick (e.g. fire a webhook, create a
  * sentinel task).  Uses synchronous I/O so it is safe to call before exit.
  */
-function appendConductorSignal(workDir: string, signal: Record<string, unknown>): void {
+type WorkerSignalInput = Omit<RateLimitSignal, 'ts'> | Omit<CrashedSignal, 'ts'> | Omit<MergeFailedSignal, 'ts'>;
+
+function appendConductorSignal(workDir: string, signal: WorkerSignalInput): void {
   try {
     const dir = join(workDir, 'data');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
