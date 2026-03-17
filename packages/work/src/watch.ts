@@ -86,7 +86,7 @@ async function printLines(path: string, offset: number): Promise<void> {
  * - If it looks like a task ID (tq-...), check flat layout first, then nested.
  * - If it looks like a worker UUID, find the latest log in that worker's dir.
  */
-async function resolveLogPath(id: string): Promise<string | null> {
+export async function resolveLogPath(id: string): Promise<string | null> {
   // Try as task ID first — new flat layout: data/work-logs/<task-id>.jsonl
   if (id.startsWith('tq-')) {
     const flat = resolveTaskLog(id);
