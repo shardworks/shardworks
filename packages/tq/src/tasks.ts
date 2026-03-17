@@ -2121,6 +2121,11 @@ export interface BranchCreateResult {
   from?: string;
 }
 
+export interface BranchDeleteResult {
+  ok: true;
+  deleted: string;
+}
+
 /**
  * Create a new Dolt branch.
  * If `from` is provided, copies that branch: CALL dolt_branch('-c', from, name).
@@ -2140,6 +2145,25 @@ export async function branchCreate(name: string, from?: string): Promise<BranchC
     if (safeFrom !== undefined) result.from = safeFrom;
     return result;
   });
+}
+
+/**
+ * Delete a Dolt branch by name.
+ * Refuses to delete the 'main' branch.
+ * Calls: CALL dolt_branch('-d', name)
+ */
+export async function branchDelete(name: string): Promise<BranchDeleteResult> {
+  const safeName = validateBranchName(name);
+  if (safeName === 'main') {
+    throw new Error("Refusing to delete the 'main' branch.");
+  }
+  const conn = await pool.getConnection();
+  try {
+    await conn.execute('CALL dolt_branch(?, ?)', ['-d', safeName]);
+    return { ok: true, deleted: safeName };
+  } finally {
+    conn.release();
+  }
 }
 
 /**

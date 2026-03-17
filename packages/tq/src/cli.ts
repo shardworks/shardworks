@@ -39,6 +39,7 @@ import {
   branchMerge,
   branchCreate,
   branchList,
+  branchDelete,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -676,6 +677,18 @@ branchCmd
   .requiredOption('--into <branch>', 'Target branch to merge into')
   .action(async (source: string, opts: { into: string }) => {
     await run(() => branchMerge(source, opts.into), { skipSchema: true });
+  });
+
+// tq branch delete <name>
+branchCmd
+  .command('delete <name>')
+  .description(
+    'Delete a Dolt branch by name.\n' +
+    'Refuses to delete the \'main\' branch.\n' +
+    'Returns { ok: true, deleted: <name> }.',
+  )
+  .action(async (name: string) => {
+    await run(() => branchDelete(name), { skipSchema: true });
   });
 
 program.parse();
