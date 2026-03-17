@@ -73,15 +73,3 @@ tq reparent <task-id> <new-parent-id|root> [--agent <id>]             # move und
 tq edit <task-id> [--description <text>] [-p <json>] [--priority <n>] [--assigned-role <role>] [--agent <id>]
 tq cancel <task-id> --reason '<text>' [--agent <id>]                   # cancel duplicate/obsolete task
 ```
-
-### Ticket creation conventions (Nexus operator)
-
-When creating tickets, use this convention for `--ready` vs draft:
-
-| Target role | Use `--ready`? | Rationale |
-|-------------|----------------|-----------|
-| `ace` | Yes, with thorough payload | Opus self-decomposes; refiner adds overhead |
-| `evaluator` | Yes | Scoped by payload, no decomposition needed |
-| `implementer` (atomic) | Yes | Fully specified, single-file or mechanical changes |
-| `implementer` (complex) | No (draft) | Needs refiner to decompose into subtasks |
-| `planner` | Yes | Planner tasks are inherently self-directed |
