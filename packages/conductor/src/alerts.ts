@@ -199,7 +199,9 @@ export async function fireAlert(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if any signal was a rate_limited event (callers should shut down).
+ * Returns true if any signal was a rate_limited event (callers should abort the
+ * current tick — spawning is suppressed via state.rateLimitedUntil until the
+ * hold-off expires; the daemon itself keeps running).
  */
 export async function processSignals(
   cfg: ConductorConfig,
