@@ -231,6 +231,7 @@ export async function dashboard(): Promise<void> {
   const collapsedIds = new Set<string>();
   let filterQuery = '';
   let filterActive = false;
+  let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pipelineTaskMeta: Array<{ taskId: string; status: string; claimedBy: string | null }> = [];
   let statusBarTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -912,10 +913,14 @@ export async function dashboard(): Promise<void> {
   // ── Refresh loop ───────────────────────────────────────────────────────
 
   let refreshing = false;
+  let refreshPending = false;
   let tailRefreshing = false;
 
   async function refresh(): Promise<void> {
-    if (refreshing) return;
+    if (refreshing) {
+      refreshPending = true;
+      return;
+    }
     refreshing = true;
     try {
       const [counts, workers, tree] = await Promise.all([
@@ -978,6 +983,10 @@ export async function dashboard(): Promise<void> {
       screen.render();
     } finally {
       refreshing = false;
+      if (refreshPending) {
+        refreshPending = false;
+        void refresh();
+      }
     }
   }
 
@@ -1064,8 +1073,11 @@ export async function dashboard(): Promise<void> {
       refresh();
       return;
     }
-    // For any other key, schedule a refresh after blessed updates the value
-    setImmediate(() => {
+    // For any other key, debounce the refresh so rapid keystrokes don't
+    // flood concurrent refresh() calls (150 ms quiet-period).
+    if (filterDebounceTimer !== null) clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => {
+      filterDebounceTimer = null;
       const query = filterInput.getValue();
       filterQuery = query;
       // If the user clears the box, clear the filter
@@ -1073,7 +1085,7 @@ export async function dashboard(): Promise<void> {
         filterQuery = '';
       }
       refresh();
-    });
+    }, 150);
   });
 
   // '/' opens the filter when the pipeline panel is focused
