@@ -34,6 +34,7 @@ import {
   statusCounts,
   history,
   diff,
+  compact,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -540,6 +541,30 @@ program
   )
   .action(async (commitA: string, commitB: string) => {
     await run(() => diff(commitA, commitB), { skipSchema: true });
+  });
+
+// ── tq compact ───────────────────────────────────────────────────────────────
+
+program
+  .command('compact <id>')
+  .description(
+    'Compact a completed task: write result_summary, null out result_payload.\n' +
+    'The original result_payload survives in Dolt history at the preceding commit.\n' +
+    'Use --subtree to recursively compact all completed descendants too.',
+  )
+  .option('--summary <json>', 'JSON summary to store as result_summary', '{}')
+  .option('--subtree', 'Also compact all completed descendants')
+  .option('--agent <id>', 'Agent/user performing the operation', DEFAULT_AGENT_ID)
+  .action(async (id: string, opts: { summary: string; subtree?: boolean; agent: string }) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(opts.summary);
+    } catch {
+      process.stderr.write(JSON.stringify({ error: 'Error', message: `--summary is not valid JSON: ${opts.summary}` }, null, 2) + '\n');
+      await pool.end();
+      process.exit(1);
+    }
+    await run(() => compact(id, parsed, opts.agent, opts.subtree ?? false));
   });
 
 program.parse();
