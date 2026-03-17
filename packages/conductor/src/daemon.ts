@@ -20,7 +20,7 @@ import { processSignals, fireAlert } from './alerts.js';
 // ---------------------------------------------------------------------------
 
 /** Maximum fraction of maxWorkers that can be refiners simultaneously. */
-const REFINER_MAX_FRACTION = 0.4;
+const REFINER_MAX_FRACTION = 1.0;
 
 /**
  * Minimum fraction of maxWorkers reserved for refiners when draft tasks exist.

@@ -295,7 +295,7 @@ export async function dashboard(): Promise<void> {
         taskId: r.id,
         description: r.description,
         claimedAt: r.claimed_at,
-        role: r.assigned_role ?? roleMap.get(r.id) ?? null,
+        role: r.assigned_role ?? roleMap.get(r.id) ?? 'implementer',
       }));
     } catch {
       return [];
@@ -621,6 +621,7 @@ export async function dashboard(): Promise<void> {
       case 'implementer': return '{green-fg}impl{/green-fg}';
       case 'refiner':     return '{yellow-fg}rfnr{/yellow-fg}';
       case 'planner':     return '{cyan-fg}plnr{/cyan-fg}';
+      case 'senior-implementer': return '{magenta-fg}snr!{/magenta-fg}';
       case 'tq-writer':   return '{grey-fg}writ{/grey-fg}';
       case 'tq-reader':   return '{grey-fg}read{/grey-fg}';
       default:            return role ? `{grey-fg}${role.slice(0, 4)}{/grey-fg}` : '{grey-fg}  ? {/grey-fg}';
@@ -716,7 +717,8 @@ export async function dashboard(): Promise<void> {
           const formatted = formatEvent(event);
           if (formatted) logBox.log(formatted);
         } catch {
-          logBox.log(line);
+          // Strip curly braces so blessed doesn't interpret them as color tags
+          logBox.log(line.replace(/[{}]/g, ''));
         }
       });
       rl.on('close', () => {
@@ -779,7 +781,7 @@ export async function dashboard(): Promise<void> {
               const formatted = formatEvent(event);
               if (formatted) logBox.log(formatted);
             } catch {
-              logBox.log(line);
+              logBox.log(line.replace(/[{}]/g, ''));
             }
           });
           rl.on('close', resolve);

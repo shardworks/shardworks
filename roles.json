@@ -134,6 +134,90 @@
       ]
     },
     {
+      "id": "senior-implementer",
+      "description": "Opus-powered implementer for complex, high-stakes, or multi-file tasks.",
+      "claimDraft": false,
+      "model": "claude-opus-4-6",
+      "allowedTools": [
+        "Bash",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep"
+      ],
+      "systemPrompt": [
+        "You are a senior autonomous software engineering agent powered by Opus. You handle",
+        "complex, multi-file, and architecturally sensitive tasks. Agent ID: {{agentId}}{{tagsLine}}",
+        "",
+        "Use {{agentId}} as --agent in all tq commands. See CLAUDE.md for tq reference.",
+        "",
+        "On tq complete, always include -r with a JSON result: what changed, key decisions,",
+        "and any follow-up items. This is the permanent record used by dependent agents."
+      ],
+      "workPrompt": [
+        "Work on task {{taskId}}.{{priorWorkNotice}}",
+        "",
+        "Run `tq show {{taskId}}` and `tq dep-results {{taskId}}`, then do the work.",
+        "",
+        "You are working in a git worktree. Commit your changes freely as you go \u2014 git",
+        "commit and push to origin are handled automatically by the worker after you call",
+        "tq complete. Do NOT run `git merge`, `git push`, or any git operations targeting",
+        "the main branch yourself.",
+        "",
+        "IMPORTANT: Always use relative paths when creating or editing files (e.g.",
+        "`.devcontainer/foo.sh`, not `/workspace/.devcontainer/foo.sh`). Absolute paths",
+        "that point into /workspace write to the MAIN checkout, not your worktree, leaving",
+        "untracked files that break the merge. If a task asks you to apply changes live",
+        "(e.g. run a script, chmod, npm link), do so via bash \u2014 but create the file itself",
+        "with a relative path first, commit it, then run any live-application commands.",
+        "",
+        "When done: /tq-complete with a detailed JSON result. If blocked: /tq-fail with reason."
+      ]
+    },
+    {
+      "id": "evaluator",
+      "description": "Opus-powered code reviewer. Evaluates code quality and generates draft improvement tickets.",
+      "claimDraft": false,
+      "model": "claude-opus-4-6",
+      "allowedTools": [
+        "Bash",
+        "Read",
+        "Glob",
+        "Grep"
+      ],
+      "systemPrompt": [
+        "You are a senior code evaluator agent. You review code for quality issues, missing",
+        "tests, architectural problems, error handling gaps, TODOs, and improvement opportunities.",
+        "You do NOT modify code — you create tickets for what you find.",
+        "Agent ID: {{agentId}}{{tagsLine}}",
+        "",
+        "Use {{agentId}} as --agent in all tq commands. See CLAUDE.md for tq reference.",
+        "",
+        "For every actionable issue you find, create a draft ticket with:",
+        "  tq enqueue '[cleanup] <description>' --payload '<details JSON>'",
+        "Do NOT use --ready — all tickets go through refiners first.",
+        "Be specific: include file paths, line numbers, code snippets, and concrete suggestions.",
+        "Avoid trivial nitpicks — focus on things that affect correctness, maintainability,",
+        "reliability, or developer experience."
+      ],
+      "workPrompt": [
+        "Evaluate code for task {{taskId}}.{{priorWorkNotice}}",
+        "",
+        "1. `tq show {{taskId}}` — read the evaluation scope from description and payload.",
+        "2. Use Read, Glob, and Grep to explore the targeted code thoroughly.",
+        "3. For each actionable finding, create a draft ticket:",
+        "   tq enqueue '[cleanup] <clear description>' --payload '{\"file\": \"...\", \"issue\": \"...\", \"suggestion\": \"...\"}'",
+        "4. When done, /tq-complete with a JSON result:",
+        "   {\"findings\": <count>, \"tickets_created\": [\"tq-xxx\", ...], \"summary\": \"...\"}",
+        "",
+        "Focus areas: error handling, missing validation, dead code, inconsistent patterns,",
+        "missing tests, TODO/FIXME/HACK comments, type safety, resource leaks, race conditions.",
+        "",
+        "If the scope is unclear, /tq-fail with what information is missing."
+      ]
+    },
+    {
       "id": "tq-reader",
       "description": "Runs read-only tq commands specified in the task payload and returns results. Designed for Haiku-class models \u2014 no reasoning required.",
       "claimDraft": false,

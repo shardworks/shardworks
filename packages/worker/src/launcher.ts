@@ -273,7 +273,7 @@ async function runTqSessionEnd(agentId: string, workDir: string): Promise<void> 
 // Argument construction
 // ---------------------------------------------------------------------------
 
-export function buildArgs(config: ConductedConfig): string[] {
+export function buildArgs(config: ConductedConfig): { args: string[]; prompt: string } {
   const role = loadRole(config.role, config.workDir);
   const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags, workDir: config.workDir };
 
@@ -307,9 +307,11 @@ export function buildArgs(config: ConductedConfig): string[] {
     args.push('--max-budget-usd', String(config.claudeMaxBudgetUsd));
   }
 
-  args.push(renderWorkPrompt(role, vars));
+  // The prompt is returned separately and piped to stdin in launch() because
+  // --tools <tools...> is variadic and greedily consumes positional args.
+  const prompt = renderWorkPrompt(role, vars);
 
-  return args;
+  return { args, prompt };
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +398,7 @@ export function formatEvent(event: StreamEvent): string | null {
 // ---------------------------------------------------------------------------
 
 export function launch(config: ConductedConfig): LaunchHandle {
-  const args = buildArgs(config);
+  const { args, prompt } = buildArgs(config);
 
   // Logs are keyed by task ID (not agent ID) — append across retries
   const logDir = workLogsDir(config.workDir);
@@ -420,9 +422,12 @@ export function launch(config: ConductedConfig): LaunchHandle {
 
     const child = spawn('claude', args, {
       cwd: config.workDir,
-      // Pipe both stdout (stream-json) and stderr (Claude's progress output)
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Pipe stdin (prompt), stdout (stream-json), and stderr (Claude's progress output)
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Write the prompt via stdin to avoid --tools variadic arg consuming it
+    child.stdin!.end(prompt);
 
     // Start heartbeat loop if the task has a timeout configured.
     // Use half the timeout as the heartbeat interval so we comfortably beat
@@ -494,9 +499,15 @@ export function launch(config: ConductedConfig): LaunchHandle {
     child.stderr.resume();
 
     return new Promise<LaunchResult>((resolve, reject) => {
+      // Guard against double-settlement if both 'error' and 'close' fire for
+      // the same spawn failure (error fires first, then close follows).
+      let settled = false;
+
       child.on('error', (err) => {
         stopHeartbeat?.();
         void runTqSessionEnd(config.agentId, config.workDir).then(() => {
+          if (settled) return;
+          settled = true;
           logStream.end();
           // If metadata wasn't emitted yet, reject that promise too
           if (!metadataEmitted) {
@@ -510,6 +521,8 @@ export function launch(config: ConductedConfig): LaunchHandle {
       child.on('close', (code) => {
         stopHeartbeat?.();
         void runTqSessionEnd(config.agentId, config.workDir).then(() => {
+          if (settled) return;
+          settled = true;
           logStream.end();
           // If session_id never appeared (e.g. Claude crashed immediately),
           // still resolve metadata with empty session_id so the caller doesn't hang

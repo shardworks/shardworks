@@ -1995,6 +1995,81 @@ export async function branchMerge(source: string, target: string): Promise<Branc
 }
 
 // ---------------------------------------------------------------------------
+// Branch create / list
+// ---------------------------------------------------------------------------
+
+export interface BranchInfo {
+  name: string;
+  hash: string;
+  latest_committer: string | null;
+  latest_committer_email: string | null;
+  latest_commit_date: Date | null;
+  latest_commit_message: string | null;
+  remote: string | null;
+  branch: string | null;
+}
+
+interface BranchRow extends RowDataPacket {
+  name: string;
+  hash: string;
+  latest_committer: string | null;
+  latest_committer_email: string | null;
+  latest_commit_date: Date | null;
+  latest_commit_message: string | null;
+  remote: string | null;
+  branch: string | null;
+}
+
+export interface BranchCreateResult {
+  ok: true;
+  name: string;
+  from?: string;
+}
+
+/**
+ * Create a new Dolt branch.
+ * If `from` is provided, copies that branch: CALL dolt_branch('-c', from, name).
+ * Otherwise creates from HEAD: CALL dolt_branch(name).
+ * Wrapped in withCommit for consistent connection management.
+ */
+export async function branchCreate(name: string, from?: string): Promise<BranchCreateResult> {
+  const safeName = validateBranchName(name);
+  const safeFrom = from !== undefined ? validateBranchName(from) : undefined;
+  return withCommit(`[branch create] ${safeName}${safeFrom ? ` from ${safeFrom}` : ''}`, async conn => {
+    if (safeFrom !== undefined) {
+      await conn.execute('CALL dolt_branch(?, ?, ?)', ['-c', safeFrom, safeName]);
+    } else {
+      await conn.execute('CALL dolt_branch(?)', [safeName]);
+    }
+    const result: BranchCreateResult = { ok: true, name: safeName };
+    if (safeFrom !== undefined) result.from = safeFrom;
+    return result;
+  });
+}
+
+/**
+ * List all Dolt branches by querying the dolt_branches system table.
+ */
+export async function branchList(): Promise<BranchInfo[]> {
+  const conn = await pool.getConnection();
+  try {
+    const [rows] = await conn.execute<BranchRow[]>('SELECT * FROM dolt_branches ORDER BY name ASC');
+    return rows.map(r => ({
+      name: r.name,
+      hash: r.hash,
+      latest_committer: r.latest_committer ?? null,
+      latest_committer_email: r.latest_committer_email ?? null,
+      latest_commit_date: r.latest_commit_date ?? null,
+      latest_commit_message: r.latest_commit_message ?? null,
+      remote: r.remote ?? null,
+      branch: r.branch ?? null,
+    }));
+  } finally {
+    conn.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
 

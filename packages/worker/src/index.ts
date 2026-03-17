@@ -98,6 +98,12 @@ async function main(): Promise<void> {
 
   const handle = launch(conducted);
 
+  // Attach a no-op catch to `done` immediately so that if `metadata` rejects
+  // (spawn error) and we never reach `await handle.done` below, Node does not
+  // emit an unhandledRejection.  The real error propagates through the metadata
+  // rejection path and is caught by `main().catch`.
+  handle.done.catch(() => undefined);
+
   // Wait for Claude to establish a session, then emit metadata for the orchestrator.
   const meta = await handle.metadata;
   process.stdout.write(JSON.stringify(meta) + '\n');

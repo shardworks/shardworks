@@ -36,6 +36,8 @@ import {
   diff,
   compact,
   branchMerge,
+  branchCreate,
+  branchList,
   type ListFilters,
 } from './tasks.js';
 import type { EnqueueInput, BatchEnqueueInput, TaskStatus } from '@shardworks/shared-types';
@@ -573,6 +575,23 @@ program
 const branchCmd = program
   .command('branch')
   .description('Dolt branch management commands');
+
+// tq branch create <name> [--from <branch>]
+branchCmd
+  .command('create <name>')
+  .description('Create a new Dolt branch from HEAD (or from --from <branch>)')
+  .option('--from <branch>', 'Source branch to copy from (default: current HEAD)')
+  .action(async (name: string, opts: { from?: string }) => {
+    await run(() => branchCreate(name, opts.from), { skipSchema: true });
+  });
+
+// tq branch list
+branchCmd
+  .command('list')
+  .description('List all Dolt branches')
+  .action(async () => {
+    await run(() => branchList(), { skipSchema: true });
+  });
 
 // tq branch merge <source> --into <target>
 branchCmd

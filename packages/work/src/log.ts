@@ -90,6 +90,11 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
+/** Strip curly braces from content so blessed doesn't interpret them as tags. */
+function esc(s: string): string {
+  return s.replace(/[{}]/g, '');
+}
+
 /** Format a stream event into a short human-readable line. */
 export function formatEvent(event: StreamEvent): string | null {
   // Derive a timestamp prefix from the event if available. Claude SDK events
@@ -106,21 +111,21 @@ export function formatEvent(event: StreamEvent): string | null {
       const lines: string[] = [];
       for (const block of content) {
         if (block.type === 'text' && block.text) {
-          const text = block.text.replace(/\n/g, ' ').slice(0, 200);
+          const text = esc(block.text.replace(/\n/g, ' ').slice(0, 200));
           lines.push(`${prefix}{green-fg}[assistant]{/green-fg} ${text}`);
         } else if (block.type === 'tool_use' && block.name) {
-          const inputStr = block.input ? JSON.stringify(block.input).slice(0, 80) : '';
-          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${block.name}${inputStr ? ' ' + inputStr : ''}`);
+          const inputStr = block.input ? esc(JSON.stringify(block.input).slice(0, 80)) : '';
+          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${esc(block.name)}${inputStr ? ' ' + inputStr : ''}`);
         }
         // 'thinking' blocks are skipped (internal reasoning)
       }
       // Legacy streaming format: event.subtype + event.content_block
       if (lines.length === 0) {
         if (event.subtype === 'text' && event.content_block?.text) {
-          const text = (event.content_block.text as string).slice(0, 200);
+          const text = esc((event.content_block.text as string).slice(0, 200));
           lines.push(`${prefix}{green-fg}[assistant]{/green-fg} ${text}`);
         } else if (event.content_block?.name) {
-          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${event.content_block.name}`);
+          lines.push(`${prefix}{yellow-fg}[tool]{/yellow-fg} ${esc(String(event.content_block.name))}`);
         }
       }
       return lines.length > 0 ? lines.join('\n') : null;
@@ -137,7 +142,7 @@ export function formatEvent(event: StreamEvent): string | null {
     // Legacy streaming event types
     case 'tool_use': {
       const name = event.content_block?.name ?? 'unknown';
-      return `${prefix}{yellow-fg}[tool]{/yellow-fg} ${String(name)}`;
+      return `${prefix}{yellow-fg}[tool]{/yellow-fg} ${esc(String(name))}`;
     }
     case 'tool_result': {
       return `${prefix}{cyan-fg}[result]{/cyan-fg} tool completed`;
