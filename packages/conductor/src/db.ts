@@ -12,8 +12,9 @@ export function getPool(): Pool {
     _pool = mysql.createPool({
       host: process.env['DOLT_HOST'] ?? 'dolt',
       port: parseInt(process.env['DOLT_PORT'] ?? '3306', 10),
-      user: 'root',
-      database: 'shardworks',
+      user: process.env['DOLT_USER'] ?? 'root',
+      password: process.env['DOLT_PASSWORD'] ?? '',
+      database: process.env['DOLT_DATABASE'] ?? 'shardworks',
       waitForConnections: true,
       connectionLimit: 5,
       dateStrings: false,
