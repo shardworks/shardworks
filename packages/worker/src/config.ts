@@ -19,6 +19,11 @@ interface BaseConfig {
    * Overridden by --interactive / --no-interactive.
    */
   interactive: boolean;
+  /**
+   * Dolt branch to operate on for all tq commands.
+   * Defaults to 'main' if not specified.
+   */
+  branch: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +59,7 @@ export const program = new Command()
   .version('0.0.1')
   .option('--task-id <id>', 'Task ID to claim (conducted mode)')
   .option('--role <role>', 'Worker role (default: implementer)', process.env['WORKER_ROLE'] ?? 'implementer')
+  .option('--branch <name>', 'Dolt branch to operate on (default: main)', process.env['WORKER_BRANCH'] ?? 'main')
   .option('--interactive', 'Force human-readable stderr output')
   .option('--no-interactive', 'Force silent stderr output');
 
@@ -65,11 +71,13 @@ export function configFromParsedOpts(): WorkerConfig {
   const opts = program.opts<{
     taskId?: string;
     role: string;
+    branch: string;
     interactive: boolean;
   }>();
 
   const taskId = opts.taskId;
   const role   = opts.role;
+  const branch = opts.branch ?? 'main';
 
   // Commander handles --interactive / --no-interactive as a boolean with
   // negation. If neither flag was explicitly passed, fall back to TTY detection.
@@ -99,7 +107,7 @@ export function configFromParsedOpts(): WorkerConfig {
   const agentId = randomUUID();
 
   const base: BaseConfig = {
-    agentId, role, interactive, agentTags, workDir, claudeModel, claudeMaxBudgetUsd,
+    agentId, role, interactive, agentTags, workDir, claudeModel, claudeMaxBudgetUsd, branch,
   };
 
   if (taskId !== undefined) {

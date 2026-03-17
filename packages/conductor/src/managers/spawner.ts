@@ -329,8 +329,8 @@ export class SpawnerManager implements Manager {
     _counts: TaskCounts,
     taskId?: string,
   ): Promise<SpawnedWorker | null> {
-    const spawned = spawnWorker(ctx.cfg.workDir, action, taskId);
-    ctx.log('info', `Spawned ${action} worker`, { pid: spawned.pid, taskId: taskId ?? null });
+    const spawned = spawnWorker(ctx.cfg.workDir, action, taskId, ctx.cfg.branch);
+    ctx.log('info', `Spawned ${action} worker`, { pid: spawned.pid, taskId: taskId ?? null, branch: ctx.cfg.branch });
 
     if (spawned.pid < 0) {
       ctx.log('warn', `Failed to get PID for ${action} worker`);

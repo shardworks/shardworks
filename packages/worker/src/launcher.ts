@@ -275,7 +275,7 @@ async function runTqSessionEnd(agentId: string, workDir: string): Promise<void> 
 
 export function buildArgs(config: ConductedConfig): { args: string[]; prompt: string } {
   const role = loadRole(config.role, config.workDir);
-  const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags, workDir: config.workDir };
+  const vars = { agentId: config.agentId, taskId: config.taskId, agentTags: config.agentTags, workDir: config.workDir, branch: config.branch };
 
   const args: string[] = [
     '-p',

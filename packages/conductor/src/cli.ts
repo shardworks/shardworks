@@ -72,12 +72,14 @@ program
   .option('--poll-interval <seconds>', 'Seconds between ticks', '30')
   .option('--stale-after <duration>', 'Reap tasks stale longer than this (e.g. 30m)', '30m')
   .option('--alert-webhook <url>', 'Webhook URL for urgent alerts (Slack/Discord/ntfy.sh/etc.)')
+  .option('--branch <name>', 'Dolt branch all spawned workers operate on (default: main)')
   .option('--workdir <path>', 'Working directory (default: $WORK_DIR or cwd)')
   .action(async (opts: {
     maxWorkers: string;
     pollInterval: string;
     staleAfter: string;
     alertWebhook?: string;
+    branch?: string;
     workdir?: string;
   }) => {
     const workDir = opts.workdir ?? workDirFromEnvOrCwd();
@@ -107,6 +109,7 @@ program
             CONDUCTOR_POLL_INTERVAL: opts.pollInterval,
             CONDUCTOR_STALE_AFTER: opts.staleAfter,
             ...(opts.alertWebhook ? { CONDUCTOR_ALERT_WEBHOOK: opts.alertWebhook } : {}),
+            ...(opts.branch ? { CONDUCTOR_BRANCH: opts.branch } : {}),
           },
         });
 
