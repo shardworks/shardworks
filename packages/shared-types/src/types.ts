@@ -24,6 +24,7 @@ export interface TaskDbRow {
   eligible_at: Date | null;
   claimed_at: Date | null;
   completed_at: Date | null;
+  archived_at: Date | null;
 }
 
 /** A JSON-serializable value. */
@@ -68,6 +69,8 @@ export interface Task {
   eligible_at: Date | null;
   claimed_at: Date | null;
   completed_at: Date | null;
+  /** Timestamp when the task was archived (work log gzipped, result_payload nulled). */
+  archived_at: Date | null;
   /** IDs of tasks that must complete before this task becomes eligible. */
   dependencies: string[];
 }

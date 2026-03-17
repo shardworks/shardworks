@@ -80,6 +80,7 @@ function rowToTask(row: TaskRow, deps: string[]): Task {
     eligible_at: row.eligible_at ?? null,
     claimed_at: row.claimed_at ?? null,
     completed_at: row.completed_at ?? null,
+    archived_at: row.archived_at ?? null,
     dependencies: deps,
   };
 }
