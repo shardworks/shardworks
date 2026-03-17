@@ -4,6 +4,7 @@ import { pool } from './db.js';
 import {
   workLogsDir,
   formatEvent,
+  formatEventVerbose,
   type StreamEvent,
 } from './log.js';
 import { createReadStream, statSync } from 'node:fs';
@@ -849,7 +850,8 @@ export async function dashboard(): Promise<void> {
         rl.on('line', (line: string) => {
           try {
             const event = JSON.parse(line) as StreamEvent;
-            const formatted = formatEvent(event);
+            // Use verbose formatter in the overlay for richer detail
+            const formatted = formatEventVerbose(event);
             if (formatted) lines.push(formatted);
           } catch {
             // skip unparseable lines
